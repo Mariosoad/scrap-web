@@ -76,7 +76,7 @@ async function saveNewClients(leads) {
   ]);
 
   await pool.query(
-    "INSERT INTO client (`name`, `email`, `address`, `web`) VALUES ?",
+    "INSERT INTO clients (`name`, `email`, `address`, `web`) VALUES ?",
     [values]
   );
 
