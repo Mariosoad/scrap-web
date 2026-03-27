@@ -17,4 +17,10 @@ module.exports = {
   smtpUser: process.env.SMTP_USER || "",
   smtpPass: process.env.SMTP_PASS || "",
   smtpFrom: process.env.SMTP_FROM || process.env.SMTP_USER || "",
+  mysqlUrl: process.env.MYSQL_PUBLIC_URL || process.env.MYSQL_URL || "",
+  mysqlHost: process.env.MYSQLHOST || "",
+  mysqlPort: Number(process.env.MYSQLPORT || 3306),
+  mysqlUser: process.env.MYSQLUSER || "",
+  mysqlPassword: process.env.MYSQLPASSWORD || process.env.MYSQL_ROOT_PASSWORD || "",
+  mysqlDatabase: process.env.MYSQLDATABASE || process.env.MYSQL_DATABASE || "",
 };
