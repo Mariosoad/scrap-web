@@ -1,11 +1,17 @@
 const axios = require("axios");
-const { overpassUrl, overpassUrls, requestTimeoutMs } = require("../config");
+const {
+  overpassUrl,
+  overpassUrls,
+  overpassTimeoutMs,
+} = require("../config");
 
 const FIXED_LOCATION = "Buenos Aires, Argentina";
 // Bounding box for AMBA area: south, west, north, east.
 const BUENOS_AIRES_BBOX = "-34.92,-58.86,-34.23,-58.15";
+/** Instancias globales (wiki OSM). No usar overpass.osm.ch fuera de Suiza. */
 const DEFAULT_OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
 ];
@@ -41,28 +47,58 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isRetryableHttpStatus(status) {
+  return [408, 429, 500, 502, 503, 504].includes(Number(status));
+}
+
+function isRetryableNetworkError(error) {
+  if (error.response) return false;
+  const code = error.code || "";
+  return (
+    code === "ECONNABORTED" ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET" ||
+    code === "EAI_AGAIN" ||
+    code === "ENOTFOUND" ||
+    code === "ECONNREFUSED" ||
+    code === "EPIPE"
+  );
+}
+
 async function executeOverpassQuery(overpassQuery) {
   const candidateUrls = [...new Set([...overpassUrls, overpassUrl, ...DEFAULT_OVERPASS_URLS])];
   const errors = [];
+  const maxAttempts = 3;
+
+  const body = new URLSearchParams({ data: overpassQuery });
+  const axiosConfig = {
+    timeout: overpassTimeoutMs,
+    headers: {
+      "User-Agent": "LeadsEnrichmentBot/1.0",
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    maxRedirects: 5,
+  };
 
   for (const endpoint of candidateUrls) {
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        const response = await axios.get(endpoint, {
-          params: { data: overpassQuery },
-          timeout: requestTimeoutMs * 3,
-          headers: {
-            "User-Agent": "LeadsEnrichmentBot/1.0",
-          },
-        });
+        const response = await axios.post(endpoint, body.toString(), axiosConfig);
         return response.data;
       } catch (error) {
-        const status = error.response?.status || "NO_STATUS";
-        errors.push(`${endpoint} (attempt ${attempt}): ${status}`);
-        if (![429, 502, 503, 504].includes(Number(status))) {
+        const status = error.response?.status;
+        const detail =
+          status != null
+            ? String(status)
+            : `NO_STATUS${error.code ? `(${error.code})` : ""}`;
+        errors.push(`${endpoint} (attempt ${attempt}): ${detail}`);
+        const retryHttp = status != null && isRetryableHttpStatus(status);
+        const retryNet = status == null && isRetryableNetworkError(error);
+        if (!retryHttp && !retryNet) {
           break;
         }
-        await sleep(400 * attempt);
+        await sleep(500 * attempt);
       }
     }
   }

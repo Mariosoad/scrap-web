@@ -5,6 +5,8 @@ dotenv.config();
 module.exports = {
   port: process.env.PORT || 3000,
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 12000),
+  /** Overpass puede tardar >60s en mirrors públicos; 504 suele ser saturación del servidor. */
+  overpassTimeoutMs: Number(process.env.OVERPASS_TIMEOUT_MS || 90000),
   overpassUrl:
     process.env.OVERPASS_API_URL || "https://overpass-api.de/api/interpreter",
   overpassUrls: (process.env.OVERPASS_API_URLS || "")
