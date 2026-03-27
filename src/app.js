@@ -316,6 +316,34 @@ app.get("/api/clients", async (req, res) => {
 
 /**
  * @swagger
+ * /api/clients/claim:
+ *   get:
+ *     summary: Obtiene un cliente sin status (el de mayor id)
+ *     tags: [Clients]
+ *     description: Devuelve un solo registro con status NULL, ordenado por id descendente.
+ *     responses:
+ *       200:
+ *         description: Cliente disponible o ninguno
+ *       500:
+ *         description: Error del servidor
+ */
+app.get("/api/clients/claim", async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM clients WHERE `status` IS NULL ORDER BY id DESC LIMIT 1"
+    );
+    const client = rows?.[0] ?? null;
+    return res.json({ data: client });
+  } catch (error) {
+    return res.status(500).json({
+      message: "No se pudo obtener el cliente.",
+      detail: error.message,
+    });
+  }
+});
+
+/**
+ * @swagger
  * /api/email/send:
  *   post:
  *     summary: Envia un email por SMTP
