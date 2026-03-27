@@ -20,6 +20,10 @@ app.use((req, res, next) => {
 });
 app.use(express.json());
 const FIXED_LOCATION = "Buenos Aires, Argentina";
+const DEFAULT_MAX_RESULTS = 25;
+const MAX_RESULTS_LIMIT = 200;
+const DISCOVERY_MULTIPLIER = 5;
+const MAX_DISCOVERY_LIMIT = 1000;
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
@@ -120,11 +124,16 @@ app.get("/health", (_, res) => {
  *               maxResults:
  *                 type: integer
  *                 minimum: 1
- *                 maximum: 20
- *                 example: 10
+ *                 maximum: 200
+ *                 example: 25
+ *               offset:
+ *                 type: integer
+ *                 minimum: 0
+ *                 example: 0
  *           example:
  *             category: "inmobiliaria"
- *             maxResults: 10
+ *             maxResults: 25
+ *             offset: 0
  *     responses:
  *       200:
  *         description: Leads procesados
@@ -132,7 +141,7 @@ app.get("/health", (_, res) => {
  *         description: Error de validacion
  */
 app.post("/api/leads/scrape", async (req, res) => {
-  const { category, maxResults = 10 } = req.body || {};
+  const { category, maxResults = DEFAULT_MAX_RESULTS, offset = 0 } = req.body || {};
 
   if (!category || typeof category !== "string") {
     return res.status(400).json({
@@ -140,17 +149,26 @@ app.post("/api/leads/scrape", async (req, res) => {
     });
   }
 
-  const safeMaxResults = Math.max(1, Math.min(Number(maxResults) || 10, 20));
+  const safeMaxResults = Math.max(
+    1,
+    Math.min(Number(maxResults) || DEFAULT_MAX_RESULTS, MAX_RESULTS_LIMIT)
+  );
+  const safeOffset = Math.max(0, Number(offset) || 0);
 
   try {
-    const discoveryLimit = Math.min(safeMaxResults * 5, 100);
-    const { businesses, searchArea } = await discoverBusinesses({
+    const discoveryLimit = Math.min(
+      (safeOffset + safeMaxResults) * DISCOVERY_MULTIPLIER,
+      MAX_DISCOVERY_LIMIT
+    );
+    const { businesses, searchArea, totalBusinesses } = await discoverBusinesses({
       category,
       maxResults: discoveryLimit,
+      offset: 0,
     });
+    const pagedBusinesses = businesses.slice(safeOffset, safeOffset + safeMaxResults);
     const leads = [];
 
-    for (const business of businesses) {
+    for (const business of pagedBusinesses) {
       const websiteContacts = await scrapeWebsiteContacts(business.website);
       const primaryEmail = websiteContacts.emails[0] || null;
       if (!primaryEmail) {
@@ -164,23 +182,89 @@ app.post("/api/leads/scrape", async (req, res) => {
         sourceWebsite: business.website || null,
       });
 
-      if (leads.length >= safeMaxResults) {
-        break;
-      }
     }
 
-    await saveNewClients(leads);
+    const saveSummary = await saveNewClients(leads);
+    const nextOffset = safeOffset + pagedBusinesses.length;
+    const hasMore = nextOffset < totalBusinesses;
 
     return res.json({
       category,
       location: FIXED_LOCATION,
       searchArea,
+      maxResults: safeMaxResults,
+      offset: safeOffset,
+      nextOffset,
+      hasMore,
+      totalBusinessesDiscovered: totalBusinesses,
       count: leads.length,
+      insertedCount: saveSummary.insertedCount,
+      skippedCount: saveSummary.skippedCount,
       leads,
     });
   } catch (error) {
     return res.status(500).json({
       message: "No se pudieron procesar los leads.",
+      detail: error.message,
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/clients:
+ *   get:
+ *     summary: Lista clientes paginados
+ *     tags: [Clients]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *         description: Numero de pagina (50 registros por pagina)
+ *     responses:
+ *       200:
+ *         description: Clientes paginados
+ *       400:
+ *         description: Error de validacion
+ */
+app.get("/api/clients", async (req, res) => {
+  const rawPage = req.query.page;
+  const page = Number.parseInt(rawPage, 10) || 1;
+  const pageSize = 50;
+
+  if (!Number.isInteger(page) || page < 1) {
+    return res.status(400).json({
+      message: "El parametro 'page' debe ser un entero mayor o igual a 1.",
+    });
+  }
+
+  const offset = (page - 1) * pageSize;
+
+  try {
+    const [countRows] = await pool.query("SELECT COUNT(*) AS total FROM clients");
+    const total = Number(countRows?.[0]?.total || 0);
+    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 0;
+
+    const [clients] = await pool.query(
+      "SELECT * FROM clients ORDER BY email ASC LIMIT ? OFFSET ?",
+      [pageSize, offset]
+    );
+
+    return res.json({
+      page,
+      pageSize,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      data: clients,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "No se pudieron obtener los clients.",
       detail: error.message,
     });
   }

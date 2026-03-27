@@ -67,9 +67,13 @@ Body ejemplo:
 ```json
 {
   "category": "inmobiliaria",
-  "maxResults": 10
+  "maxResults": 25,
+  "offset": 0
 }
 ```
+
+- `maxResults`: cantidad de negocios a procesar por tanda (1 a 200).
+- `offset`: posicion inicial para traer la siguiente tanda.
 
 Respuesta ejemplo:
 
@@ -78,7 +82,14 @@ Respuesta ejemplo:
   "category": "inmobiliaria",
   "location": "Buenos Aires, Argentina",
   "searchArea": "Buenos Aires, Argentina",
+  "maxResults": 25,
+  "offset": 0,
+  "nextOffset": 25,
+  "hasMore": true,
+  "totalBusinessesDiscovered": 312,
   "count": 2,
+  "insertedCount": 2,
+  "skippedCount": 0,
   "leads": [
     {
       "businessName": "Empresa 1",

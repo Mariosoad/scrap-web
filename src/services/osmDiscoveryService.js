@@ -70,7 +70,7 @@ async function executeOverpassQuery(overpassQuery) {
   throw new Error(`Overpass no disponible. Detalle: ${errors.join(" | ")}`);
 }
 
-async function discoverBusinesses({ category, maxResults = 10 }) {
+async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
   if (!category) {
     throw new Error("category es obligatorio.");
   }
@@ -116,9 +116,17 @@ async function discoverBusinesses({ category, maxResults = 10 }) {
     });
   }
 
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const safeMaxResults = Math.max(1, Number(maxResults) || 10);
+  const paginatedBusinesses = normalized.slice(
+    safeOffset,
+    safeOffset + safeMaxResults
+  );
+
   return {
     searchArea: FIXED_LOCATION,
-    businesses: normalized.slice(0, maxResults),
+    totalBusinesses: normalized.length,
+    businesses: paginatedBusinesses,
   };
 }
 
