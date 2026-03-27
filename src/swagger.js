@@ -9,7 +9,8 @@ const options = {
       description:
         "API para descubrir empresas con OpenStreetMap y enriquecer contactos desde sus websites publicos.",
     },
-    servers: [{ url: "http://localhost:3000" }],
+    // Use same origin where docs are served (Railway/local/dev).
+    servers: [{ url: "/" }],
   },
   apis: ["./src/app.js"],
 };
