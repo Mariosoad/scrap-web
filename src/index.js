@@ -3,18 +3,20 @@ const { port } = require("./config");
 
 function startFallbackHealthServer(error) {
   const fallback = express();
+  const bootErrorMessage = error?.stack || error?.message || String(error);
 
   fallback.get("/health", (_, res) => {
     res.status(200).json({
       ok: true,
       mode: "fallback",
       detail: "Main app failed to load. Check runtime logs.",
+      bootError: bootErrorMessage,
     });
   });
 
   fallback.listen(port, "0.0.0.0", () => {
     console.error("Main app boot failed. Fallback health server is running.");
-    console.error("Boot error:", error?.stack || error?.message || String(error));
+    console.error("Boot error:", bootErrorMessage);
     console.log(`Fallback running at http://0.0.0.0:${port}`);
   });
 }
