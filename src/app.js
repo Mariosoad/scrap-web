@@ -4,6 +4,7 @@ const swaggerSpec = require("./swagger");
 const { discoverBusinesses } = require("./services/osmDiscoveryService");
 const { scrapeWebsiteContacts } = require("./services/websiteScraperService");
 const { sendEmail } = require("./services/emailService");
+const { pool } = require("./db");
 
 const app = express();
 app.use((req, res, next) => {
@@ -19,6 +20,71 @@ app.use((req, res, next) => {
 });
 app.use(express.json());
 const FIXED_LOCATION = "Buenos Aires, Argentina";
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+async function saveNewClients(leads) {
+  if (!Array.isArray(leads) || leads.length === 0) {
+    return { insertedCount: 0, skippedCount: 0 };
+  }
+
+  const uniqueLeadsByEmail = new Map();
+  for (const lead of leads) {
+    const normalizedEmail = normalizeEmail(lead.email);
+    if (!normalizedEmail) {
+      continue;
+    }
+
+    if (!uniqueLeadsByEmail.has(normalizedEmail)) {
+      uniqueLeadsByEmail.set(normalizedEmail, {
+        ...lead,
+        email: normalizedEmail,
+      });
+    }
+  }
+
+  const candidateLeads = Array.from(uniqueLeadsByEmail.values());
+  if (candidateLeads.length === 0) {
+    return { insertedCount: 0, skippedCount: 0 };
+  }
+
+  const candidateEmails = candidateLeads.map((lead) => lead.email);
+  const placeholders = candidateEmails.map(() => "?").join(",");
+  const [existingRows] = await pool.query(
+    `SELECT email FROM client WHERE email IN (${placeholders})`,
+    candidateEmails
+  );
+
+  const existingEmails = new Set(
+    existingRows.map((row) => normalizeEmail(row.email))
+  );
+  const leadsToInsert = candidateLeads.filter(
+    (lead) => !existingEmails.has(lead.email)
+  );
+
+  if (leadsToInsert.length === 0) {
+    return { insertedCount: 0, skippedCount: candidateLeads.length };
+  }
+
+  const values = leadsToInsert.map((lead) => [
+    lead.businessName || null,
+    lead.email,
+    lead.address || null,
+    lead.sourceWebsite || null,
+  ]);
+
+  await pool.query(
+    "INSERT INTO client (`name`, `email`, `address`, `web`) VALUES ?",
+    [values]
+  );
+
+  return {
+    insertedCount: leadsToInsert.length,
+    skippedCount: candidateLeads.length - leadsToInsert.length,
+  };
+}
 
 /**
  * @swagger
@@ -102,6 +168,8 @@ app.post("/api/leads/scrape", async (req, res) => {
         break;
       }
     }
+
+    await saveNewClients(leads);
 
     return res.json({
       category,
