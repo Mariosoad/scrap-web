@@ -250,7 +250,7 @@ app.get("/api/clients", async (req, res) => {
     const totalPages = total > 0 ? Math.ceil(total / pageSize) : 0;
 
     const [clients] = await pool.query(
-      "SELECT * FROM clients ORDER BY email ASC LIMIT ? OFFSET ?",
+      "SELECT * FROM clients ORDER BY id DESC LIMIT ? OFFSET ?",
       [pageSize, offset]
     );
 
