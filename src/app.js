@@ -165,10 +165,13 @@ app.post("/api/leads/scrape", async (req, res) => {
       maxResults: discoveryLimit,
       offset: 0,
     });
-    const pagedBusinesses = businesses.slice(safeOffset, safeOffset + safeMaxResults);
     const leads = [];
+    let scanIndex = safeOffset;
 
-    for (const business of pagedBusinesses) {
+    while (scanIndex < businesses.length && leads.length < safeMaxResults) {
+      const business = businesses[scanIndex];
+      scanIndex += 1;
+
       const websiteContacts = await scrapeWebsiteContacts(business.website);
       const primaryEmail = websiteContacts.emails[0] || null;
       if (!primaryEmail) {
@@ -181,12 +184,12 @@ app.post("/api/leads/scrape", async (req, res) => {
         address: business.address || null,
         sourceWebsite: business.website || null,
       });
-
     }
 
     const saveSummary = await saveNewClients(leads);
-    const nextOffset = safeOffset + pagedBusinesses.length;
+    const nextOffset = scanIndex;
     const hasMore = nextOffset < totalBusinesses;
+    const scannedBusinessesCount = Math.max(0, scanIndex - safeOffset);
 
     return res.json({
       category,
@@ -197,6 +200,7 @@ app.post("/api/leads/scrape", async (req, res) => {
       nextOffset,
       hasMore,
       totalBusinessesDiscovered: totalBusinesses,
+      scannedBusinessesCount,
       count: leads.length,
       insertedCount: saveSummary.insertedCount,
       skippedCount: saveSummary.skippedCount,
