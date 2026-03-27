@@ -368,47 +368,86 @@ app.get("/api/clients/claim", async (req, res) => {
  *               html:
  *                 type: string
  *                 example: "<p>Hola, te comparto nuestra propuesta.</p>"
+ *               leadId:
+ *                 type: integer
+ *                 nullable: true
+ *                 description: ID opcional (p. ej. lead/cliente) para correlacionar la respuesta
+ *                 example: 123
  *           example:
  *             to: "cliente@empresa.com"
  *             subject: "Propuesta comercial"
  *             text: "Hola, te comparto nuestra propuesta."
+ *             leadId: 123
  *     responses:
  *       200:
- *         description: Email enviado
+ *         description: Email enviado (status sent)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 leadId: { type: integer, nullable: true }
+ *                 status: { type: string, enum: [sent] }
+ *                 error: { type: string, nullable: true }
  *       400:
- *         description: Error de validacion
+ *         description: Error de validacion (status failed)
+ *       500:
+ *         description: Fallo SMTP u otro error al enviar (status failed)
  */
 app.post("/api/email/send", async (req, res) => {
-  const { to, subject, text, html } = req.body || {};
+  const body = req.body || {};
+  const { to, subject, text, html } = body;
+
+  let leadId = null;
+  if (body.leadId !== undefined && body.leadId !== null && body.leadId !== "") {
+    const n = Number(body.leadId);
+    if (!Number.isFinite(n) || !Number.isInteger(n)) {
+      return res.status(400).json({
+        leadId: null,
+        status: "failed",
+        error: "El campo 'leadId' debe ser un numero entero.",
+      });
+    }
+    leadId = n;
+  }
+
   const toEmail = String(to || "").trim();
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   if (!emailRegex.test(toEmail)) {
     return res.status(400).json({
-      message: "El campo 'to' debe ser un email valido.",
+      leadId,
+      status: "failed",
+      error: "El campo 'to' debe ser un email valido.",
     });
   }
   if (!subject || typeof subject !== "string") {
     return res.status(400).json({
-      message: "El campo 'subject' es obligatorio y debe ser string.",
+      leadId,
+      status: "failed",
+      error: "El campo 'subject' es obligatorio y debe ser string.",
     });
   }
   if (!text && !html) {
     return res.status(400).json({
-      message: "Debes enviar 'text' o 'html'.",
+      leadId,
+      status: "failed",
+      error: "Debes enviar 'text' o 'html'.",
     });
   }
 
   try {
-    const result = await sendEmail({ to: toEmail, subject, text, html });
+    await sendEmail({ to: toEmail, subject, text, html });
     return res.json({
-      message: "Email enviado correctamente.",
-      ...result,
+      leadId,
+      status: "sent",
+      error: null,
     });
   } catch (error) {
     return res.status(500).json({
-      message: "No se pudo enviar el email.",
-      detail: error.message,
+      leadId,
+      status: "failed",
+      error: error.message || "No se pudo enviar el email.",
     });
   }
 });
