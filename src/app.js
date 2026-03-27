@@ -120,11 +120,10 @@ app.get("/health", (_, res) => {
  *         application/json:
  *           schema:
  *             type: object
- *             required: [category]
  *             properties:
  *               category:
  *                 type: string
- *                 description: "Texto libre; se detecta el rubro (siempre Buenos Aires AMBA). Ej. inmobiliaria, real estate, constructora, arquitectura."
+ *                 description: "Opcional. Texto libre para un solo rubro (ej. inmobiliaria, arquitectura). Si lo omitís, se busca todo el sector inmobiliario/construcción/arquitectura en AMBA."
  *                 example: "inmobiliaria"
  *               maxResults:
  *                 type: integer
@@ -136,7 +135,6 @@ app.get("/health", (_, res) => {
  *                 minimum: 0
  *                 example: 0
  *           example:
- *             category: "inmobiliaria"
  *             maxResults: 25
  *             offset: 0
  *     responses:
@@ -149,13 +147,6 @@ app.post("/api/leads/scrape", async (req, res) => {
   const { category: rawCategory, maxResults = DEFAULT_MAX_RESULTS, offset = 0 } = req.body || {};
   const category =
     typeof rawCategory === "string" ? rawCategory.trim() : "";
-
-  if (!category) {
-    return res.status(400).json({
-      message:
-        "El campo 'category' es obligatorio (string no vacio). Indica el rubro, ej. inmobiliaria, real estate, constructora.",
-    });
-  }
 
   const safeMaxResults = Math.max(
     1,
@@ -186,8 +177,16 @@ app.post("/api/leads/scrape", async (req, res) => {
       const business = businesses[scanIndex];
       scanIndex += 1;
 
-      const websiteContacts = await scrapeWebsiteContacts(business.website);
-      const primaryEmail = websiteContacts.emails[0] || null;
+      let primaryEmail =
+        Array.isArray(business.osmEmails) && business.osmEmails.length > 0
+          ? business.osmEmails[0]
+          : null;
+
+      if (!primaryEmail && business.website) {
+        const websiteContacts = await scrapeWebsiteContacts(business.website);
+        primaryEmail = websiteContacts.emails[0] || null;
+      }
+
       if (!primaryEmail) {
         continue;
       }
@@ -206,7 +205,7 @@ app.post("/api/leads/scrape", async (req, res) => {
     const scannedBusinessesCount = Math.max(0, scanIndex - safeOffset);
 
     return res.json({
-      category,
+      category: category || null,
       rubro,
       rubroLabel,
       location: FIXED_LOCATION,

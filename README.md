@@ -60,26 +60,27 @@ Cuando termine el deploy:
 
 `POST /api/leads/scrape`
 
-Solo devuelve leads que tengan `email` (nunca `null` en la lista final).
+Solo devuelve leads que tengan `email` (nunca `null` en la lista final). El email puede venir de tags OSM (`contact:email` / `email`) o del scrape del sitio si hay `website` en OSM.
 
-Body ejemplo:
+Body ejemplo (sector completo en AMBA — inmobiliaria, constructoras, arquitectura, remates/martilleros, etc.):
 
 ```json
 {
-  "category": "inmobiliaria",
   "maxResults": 25,
   "offset": 0
 }
 ```
 
-- `maxResults`: cantidad de negocios a procesar por tanda (1 a 200).
-- `offset`: posicion inicial para traer la siguiente tanda.
+- `category` (opcional): si lo envías, se acota a un rubro (ej. `inmobiliaria`, `arquitectura`). Si lo omitís, se unen todos los filtros del sector.
+- `maxResults`: cantidad maxima de leads a devolver por tanda (1 a 200).
+- `offset`: posicion inicial dentro del lote descubierto para la siguiente tanda.
 
 Respuesta ejemplo:
 
 ```json
 {
-  "category": "inmobiliaria",
+  "category": null,
+  "rubro": "sector-construccion-inmobiliario",
   "location": "Buenos Aires, Argentina",
   "searchArea": "Buenos Aires, Argentina",
   "maxResults": 25,
@@ -103,8 +104,8 @@ Respuesta ejemplo:
 
 ## Nota importante de cumplimiento
 
-- Usa OpenStreetMap/Overpass para descubrimiento de negocios.
-- El email se extrae desde websites publicos de cada empresa.
+- Usa OpenStreetMap/Overpass para descubrimiento de negocios (tags de inmobiliaria, arquitectura, construcción, remates, etc.).
+- El email se toma primero de datos publicos en OSM (`contact:email`) y, si hace falta y hay web, del sitio.
 - Si un endpoint Overpass falla por timeout (504), la API intenta automaticamente con mirrors.
 
 ## Endpoint de envio de email

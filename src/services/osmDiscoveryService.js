@@ -11,8 +11,8 @@ const FIXED_LOCATION = "Buenos Aires, Argentina";
 const BUENOS_AIRES_BBOX = "-34.92,-58.86,-34.23,-58.15";
 
 /**
- * Rubros: el cliente envía `category` como texto libre; el primer patrón que coincida define el filtro OSM.
- * Orden importa (ej. "real estate" antes que reglas genéricas).
+ * Rubros opcionales: si el cliente envía `category`, el primer patrón que coincida define el filtro OSM.
+ * Sin `category` se usa MERGED_SECTOR (todo el sector inmobiliario / construcción / arquitectura).
  */
 const RUBROS = [
   {
@@ -37,20 +37,67 @@ const RUBROS = [
   },
 ];
 
+/** Filtros OSM únicos para búsqueda amplia: inmobiliarias, martilleros/remates, arquitectos, constructoras, etc. */
+const ALL_SECTOR_FILTERS = (() => {
+  const set = new Set();
+  for (const r of RUBROS) {
+    for (const f of r.filters) set.add(f);
+  }
+  set.add('["shop"="auction"]');
+  set.add('["office"="property_management"]');
+  return [...set];
+})();
+
+const MERGED_SECTOR = {
+  slug: "sector-construccion-inmobiliario",
+  label: "Inmobiliaria, construcción, arquitectura y afines (AMBA)",
+  filters: ALL_SECTOR_FILTERS,
+};
+
 class RubroNotFoundError extends Error {
   constructor(category, examples) {
     super(
-      `Rubro no reconocido. Usa palabras como: ${examples.join(", ")}. Recibido: "${category}".`
+      `Rubro no reconocido. Omití category para buscar todo el sector, o usa palabras como: ${examples.join(", ")}. Recibido: "${category}".`
     );
     this.name = "RubroNotFoundError";
     this.examples = examples;
   }
 }
 
+/** Emails en tags OSM (contact:email es el estándar; email a veces aparece suelto). */
+function extractOsmEmails(tags = {}) {
+  const raw = tags["contact:email"] || tags["email"];
+  if (!raw || typeof raw !== "string") return [];
+  const EMAIL_REGEX = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+  const matches = raw.match(EMAIL_REGEX);
+  return matches ? [...new Set(matches.map((e) => e.trim().toLowerCase()))] : [];
+}
+
+function resolveWebsite(tags) {
+  return tags.website || tags["contact:website"] || tags.url || null;
+}
+
+function resolveBusinessName(tags) {
+  return (
+    tags.name ||
+    tags["name:es"] ||
+    tags.operator ||
+    tags.brand ||
+    null
+  );
+}
+
+/**
+ * @param {string} [category] - Texto libre; vacío = sector completo (MERGED_SECTOR).
+ */
 function resolveRubro(category) {
-  const raw = String(category || "").trim();
+  const raw = String(category ?? "").trim();
   if (!raw) {
-    throw new Error("category es obligatorio.");
+    return {
+      slug: MERGED_SECTOR.slug,
+      label: MERGED_SECTOR.label,
+      filters: MERGED_SECTOR.filters,
+    };
   }
   const value = raw.toLowerCase();
   for (const rubro of RUBROS) {
@@ -62,14 +109,23 @@ function resolveRubro(category) {
       };
     }
   }
-  throw new RubroNotFoundError(raw, RUBROS.map((r) => r.slug));
+  throw new RubroNotFoundError(raw, [
+    MERGED_SECTOR.slug,
+    ...RUBROS.map((r) => r.slug),
+  ]);
 }
 
 function listRubros() {
-  return RUBROS.map((r) => ({
-    slug: r.slug,
-    label: r.label,
-  }));
+  return [
+    {
+      slug: MERGED_SECTOR.slug,
+      label: `${MERGED_SECTOR.label} (por defecto si no envías category)`,
+    },
+    ...RUBROS.map((r) => ({
+      slug: r.slug,
+      label: r.label,
+    })),
+  ];
 }
 
 /** Instancias globales (wiki OSM). Mail.ru suele responder 403 a servidores/bots. */
@@ -81,7 +137,7 @@ const DEFAULT_OVERPASS_URLS = [
 ];
 
 /** Parte el bbox en franjas horizontales para consultas más livianas (menos 504). */
-function splitBbox(bboxStr, parts = 2) {
+function splitBbox(bboxStr, parts = 3) {
   const [south, west, north, east] = bboxStr.split(",").map(Number);
   const span = north - south;
   const out = [];
@@ -187,16 +243,17 @@ async function executeOverpassQuery(overpassQuery) {
   throw new Error(`Overpass no disponible. Detalle: ${errors.join(" | ")}`);
 }
 
+/** Sin filtro ["name"]: incluye POIs solo con email o web en OSM. */
 function buildOverpassQueryForBbox(bbox, filters) {
   const queryParts = [];
   for (const filter of filters) {
-    queryParts.push(`node${filter}["name"](${bbox});`);
-    queryParts.push(`way${filter}["name"](${bbox});`);
-    queryParts.push(`relation${filter}["name"](${bbox});`);
+    queryParts.push(`node${filter}(${bbox});`);
+    queryParts.push(`way${filter}(${bbox});`);
+    queryParts.push(`relation${filter}(${bbox});`);
   }
 
   return `
-    [out:json][timeout:50];
+    [out:json][timeout:90];
     (
       ${queryParts.join("\n")}
     );
@@ -204,10 +261,16 @@ function buildOverpassQueryForBbox(bbox, filters) {
   `;
 }
 
+function leadYieldScore(entry) {
+  const hasOsm = entry.osmEmails?.length > 0;
+  const hasWeb = Boolean(entry.website);
+  return (hasOsm ? 4 : 0) + (hasWeb ? 2 : 0) + (entry.businessName ? 1 : 0);
+}
+
 async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
   const rubro = resolveRubro(category);
   const { filters } = rubro;
-  const bboxChunks = splitBbox(BUENOS_AIRES_BBOX, 2);
+  const bboxChunks = splitBbox(BUENOS_AIRES_BBOX, 3);
   const mergedElements = [];
   const seenIds = new Set();
 
@@ -223,27 +286,26 @@ async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
   }
 
   const elements = mergedElements;
-  const seen = new Set();
   const normalized = [];
 
   for (const element of elements) {
     const tags = element.tags || {};
-    const businessName = tags.name || null;
-    if (!businessName) continue;
-
-    const website = tags.website || tags["contact:website"] || tags.url || null;
-    const address = asAddress(tags);
-    const key = `${businessName}|${address || ""}`.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const osmEmails = extractOsmEmails(tags);
+    const website = resolveWebsite(tags);
+    if (osmEmails.length === 0 && !website) {
+      continue;
+    }
 
     normalized.push({
-      businessName,
+      businessName: resolveBusinessName(tags),
       website,
-      address,
+      address: asAddress(tags),
+      osmEmails,
       source: "openstreetmap-overpass",
     });
   }
+
+  normalized.sort((a, b) => leadYieldScore(b) - leadYieldScore(a));
 
   const safeOffset = Math.max(0, Number(offset) || 0);
   const safeMaxResults = Math.max(1, Number(maxResults) || 10);
@@ -267,4 +329,5 @@ module.exports = {
   listRubros,
   RubroNotFoundError,
   FIXED_LOCATION,
+  extractOsmEmails,
 };

@@ -7,7 +7,7 @@ const options = {
       title: "Leads Enrichment API",
       version: "1.0.0",
       description:
-        "API para descubrir empresas con OpenStreetMap y enriquecer contactos desde sus websites publicos.",
+        "API para descubrir empresas del sector inmobiliario/construcción/arquitectura (AMBA) con OpenStreetMap; el email puede venir de OSM o del sitio web.",
     },
     // Use same origin where docs are served (Railway/local/dev).
     servers: [{ url: "/" }],
