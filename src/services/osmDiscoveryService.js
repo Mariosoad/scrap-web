@@ -5,31 +5,92 @@ const {
   overpassTimeoutMs,
 } = require("../config");
 
+/** Siempre AMBA (Gran Buenos Aires); el rubro solo cambia los tags OSM. */
 const FIXED_LOCATION = "Buenos Aires, Argentina";
-// Bounding box for AMBA area: south, west, north, east.
+// Bounding box AMBA: south, west, north, east.
 const BUENOS_AIRES_BBOX = "-34.92,-58.86,-34.23,-58.15";
-/** Instancias globales (wiki OSM). No usar overpass.osm.ch fuera de Suiza. */
+
+/**
+ * Rubros: el cliente envía `category` como texto libre; el primer patrón que coincida define el filtro OSM.
+ * Orden importa (ej. "real estate" antes que reglas genéricas).
+ */
+const RUBROS = [
+  {
+    slug: "inmobiliaria",
+    label: "Inmobiliaria / real estate",
+    patterns:
+      /inmobiliaria|real[\s_-]*estate|realtor|realty|estate[\s_-]*agent|propiedad|propiedades|housing|agencia[\s_-]*inmobiliaria|corredor[\s_-]*inmobiliario|venta[\s_-]*de[\s_-]*propiedades|alquiler/i,
+    filters: ['["office"="estate_agent"]', '["shop"="real_estate"]'],
+  },
+  {
+    slug: "arquitectura",
+    label: "Arquitectura",
+    patterns: /arquitecto|arquitectura|architecture|architect|estudio[\s_-]*de[\s_-]*arquitectura/i,
+    filters: ['["office"="architect"]'],
+  },
+  {
+    slug: "constructora",
+    label: "Constructora / construcción",
+    patterns:
+      /constructora?|construcci[oó]n|construction|builder|contractor|contratista|desarrolladora|edilici|obras|master[\s_-]*builder/i,
+    filters: ['["craft"="builder"]', '["office"="construction"]'],
+  },
+];
+
+class RubroNotFoundError extends Error {
+  constructor(category, examples) {
+    super(
+      `Rubro no reconocido. Usa palabras como: ${examples.join(", ")}. Recibido: "${category}".`
+    );
+    this.name = "RubroNotFoundError";
+    this.examples = examples;
+  }
+}
+
+function resolveRubro(category) {
+  const raw = String(category || "").trim();
+  if (!raw) {
+    throw new Error("category es obligatorio.");
+  }
+  const value = raw.toLowerCase();
+  for (const rubro of RUBROS) {
+    if (rubro.patterns.test(value)) {
+      return {
+        slug: rubro.slug,
+        label: rubro.label,
+        filters: rubro.filters,
+      };
+    }
+  }
+  throw new RubroNotFoundError(raw, RUBROS.map((r) => r.slug));
+}
+
+function listRubros() {
+  return RUBROS.map((r) => ({
+    slug: r.slug,
+    label: r.label,
+  }));
+}
+
+/** Instancias globales (wiki OSM). Mail.ru suele responder 403 a servidores/bots. */
 const DEFAULT_OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
-  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+  "https://overpass.openstreetmap.fr/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
 ];
 
-function buildCategoryTagFilters(category) {
-  const value = String(category || "").toLowerCase().trim();
-
-  if (/(inmobiliaria|real estate|estate|propiedad)/i.test(value)) {
-    return ['["office"="estate_agent"]', '["shop"="real_estate"]'];
+/** Parte el bbox en franjas horizontales para consultas más livianas (menos 504). */
+function splitBbox(bboxStr, parts = 2) {
+  const [south, west, north, east] = bboxStr.split(",").map(Number);
+  const span = north - south;
+  const out = [];
+  for (let i = 0; i < parts; i += 1) {
+    const s = south + (span * i) / parts;
+    const n = south + (span * (i + 1)) / parts;
+    out.push(`${s},${west},${n},${east}`);
   }
-  if (/(arquitect|architecture|arquitectura)/i.test(value)) {
-    return ['["office"="architect"]'];
-  }
-  if (/(constructor|constructora|builder|construction|desarrolladora)/i.test(value)) {
-    return ['["craft"="builder"]', '["office"="company"]'];
-  }
-
-  return ['["office"]', '["shop"]'];
+  return out;
 }
 
 function asAddress(tags = {}) {
@@ -65,27 +126,47 @@ function isRetryableNetworkError(error) {
   );
 }
 
-async function executeOverpassQuery(overpassQuery) {
-  const candidateUrls = [...new Set([...overpassUrls, overpassUrl, ...DEFAULT_OVERPASS_URLS])];
-  const errors = [];
-  const maxAttempts = 3;
-
-  const body = new URLSearchParams({ data: overpassQuery });
-  const axiosConfig = {
+async function fetchOverpassFromEndpoint(endpoint, overpassQuery) {
+  const base = {
     timeout: overpassTimeoutMs,
     headers: {
       "User-Agent": "LeadsEnrichmentBot/1.0",
-      "Content-Type": "application/x-www-form-urlencoded",
       Accept: "application/json",
     },
     maxRedirects: 5,
   };
 
+  try {
+    const response = await axios.get(endpoint, {
+      ...base,
+      params: { data: overpassQuery },
+    });
+    return response.data;
+  } catch (getErr) {
+    if (getErr.response?.status !== 414) {
+      throw getErr;
+    }
+    const body = new URLSearchParams({ data: overpassQuery }).toString();
+    const response = await axios.post(endpoint, body, {
+      ...base,
+      headers: {
+        ...base.headers,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
+    return response.data;
+  }
+}
+
+async function executeOverpassQuery(overpassQuery) {
+  const candidateUrls = [...new Set([...overpassUrls, overpassUrl, ...DEFAULT_OVERPASS_URLS])];
+  const errors = [];
+  const maxAttempts = 2;
+
   for (const endpoint of candidateUrls) {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        const response = await axios.post(endpoint, body.toString(), axiosConfig);
-        return response.data;
+        return await fetchOverpassFromEndpoint(endpoint, overpassQuery);
       } catch (error) {
         const status = error.response?.status;
         const detail =
@@ -98,7 +179,7 @@ async function executeOverpassQuery(overpassQuery) {
         if (!retryHttp && !retryNet) {
           break;
         }
-        await sleep(500 * attempt);
+        await sleep(600 * attempt);
       }
     }
   }
@@ -106,13 +187,7 @@ async function executeOverpassQuery(overpassQuery) {
   throw new Error(`Overpass no disponible. Detalle: ${errors.join(" | ")}`);
 }
 
-async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
-  if (!category) {
-    throw new Error("category es obligatorio.");
-  }
-  const bbox = BUENOS_AIRES_BBOX;
-  const filters = buildCategoryTagFilters(category);
-
+function buildOverpassQueryForBbox(bbox, filters) {
   const queryParts = [];
   for (const filter of filters) {
     queryParts.push(`node${filter}["name"](${bbox});`);
@@ -120,16 +195,34 @@ async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
     queryParts.push(`relation${filter}["name"](${bbox});`);
   }
 
-  const overpassQuery = `
-    [out:json][timeout:25];
+  return `
+    [out:json][timeout:50];
     (
       ${queryParts.join("\n")}
     );
     out center tags;
   `;
+}
 
-  const data = await executeOverpassQuery(overpassQuery);
-  const elements = data?.elements || [];
+async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
+  const rubro = resolveRubro(category);
+  const { filters } = rubro;
+  const bboxChunks = splitBbox(BUENOS_AIRES_BBOX, 2);
+  const mergedElements = [];
+  const seenIds = new Set();
+
+  for (const bbox of bboxChunks) {
+    const overpassQuery = buildOverpassQueryForBbox(bbox, filters);
+    const data = await executeOverpassQuery(overpassQuery);
+    for (const el of data?.elements || []) {
+      const idKey = `${el.type}/${el.id}`;
+      if (seenIds.has(idKey)) continue;
+      seenIds.add(idKey);
+      mergedElements.push(el);
+    }
+  }
+
+  const elements = mergedElements;
   const seen = new Set();
   const normalized = [];
 
@@ -161,6 +254,8 @@ async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
 
   return {
     searchArea: FIXED_LOCATION,
+    rubro: rubro.slug,
+    rubroLabel: rubro.label,
     totalBusinesses: normalized.length,
     businesses: paginatedBusinesses,
   };
@@ -168,4 +263,8 @@ async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
 
 module.exports = {
   discoverBusinesses,
+  resolveRubro,
+  listRubros,
+  RubroNotFoundError,
+  FIXED_LOCATION,
 };

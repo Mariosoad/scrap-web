@@ -1,7 +1,11 @@
 const express = require("express");
 const swaggerUi = require("swagger-ui-express");
 const swaggerSpec = require("./swagger");
-const { discoverBusinesses } = require("./services/osmDiscoveryService");
+const {
+  discoverBusinesses,
+  listRubros,
+  RubroNotFoundError,
+} = require("./services/osmDiscoveryService");
 const { scrapeWebsiteContacts } = require("./services/websiteScraperService");
 const { sendEmail } = require("./services/emailService");
 const { pool } = require("./db");
@@ -120,6 +124,7 @@ app.get("/health", (_, res) => {
  *             properties:
  *               category:
  *                 type: string
+ *                 description: "Texto libre; se detecta el rubro (siempre Buenos Aires AMBA). Ej. inmobiliaria, real estate, constructora, arquitectura."
  *                 example: "inmobiliaria"
  *               maxResults:
  *                 type: integer
@@ -141,11 +146,14 @@ app.get("/health", (_, res) => {
  *         description: Error de validacion
  */
 app.post("/api/leads/scrape", async (req, res) => {
-  const { category, maxResults = DEFAULT_MAX_RESULTS, offset = 0 } = req.body || {};
+  const { category: rawCategory, maxResults = DEFAULT_MAX_RESULTS, offset = 0 } = req.body || {};
+  const category =
+    typeof rawCategory === "string" ? rawCategory.trim() : "";
 
-  if (!category || typeof category !== "string") {
+  if (!category) {
     return res.status(400).json({
-      message: "El campo 'category' es obligatorio y debe ser string.",
+      message:
+        "El campo 'category' es obligatorio (string no vacio). Indica el rubro, ej. inmobiliaria, real estate, constructora.",
     });
   }
 
@@ -160,7 +168,13 @@ app.post("/api/leads/scrape", async (req, res) => {
       (safeOffset + safeMaxResults) * DISCOVERY_MULTIPLIER,
       MAX_DISCOVERY_LIMIT
     );
-    const { businesses, searchArea, totalBusinesses } = await discoverBusinesses({
+    const {
+      businesses,
+      searchArea,
+      totalBusinesses,
+      rubro,
+      rubroLabel,
+    } = await discoverBusinesses({
       category,
       maxResults: discoveryLimit,
       offset: 0,
@@ -193,6 +207,8 @@ app.post("/api/leads/scrape", async (req, res) => {
 
     return res.json({
       category,
+      rubro,
+      rubroLabel,
       location: FIXED_LOCATION,
       searchArea,
       maxResults: safeMaxResults,
@@ -207,11 +223,36 @@ app.post("/api/leads/scrape", async (req, res) => {
       leads,
     });
   } catch (error) {
+    if (error instanceof RubroNotFoundError) {
+      return res.status(400).json({
+        message: error.message,
+        location: FIXED_LOCATION,
+        rubrosDisponibles: listRubros(),
+      });
+    }
     return res.status(500).json({
       message: "No se pudieron procesar los leads.",
       detail: error.message,
     });
   }
+});
+
+/**
+ * @swagger
+ * /api/leads/rubros:
+ *   get:
+ *     summary: Rubros reconocidos (area fija Buenos Aires AMBA)
+ *     tags: [Leads]
+ *     responses:
+ *       200:
+ *         description: Lista de slugs y etiquetas
+ */
+app.get("/api/leads/rubros", (_, res) => {
+  res.json({
+    location: FIXED_LOCATION,
+    areaNote: "Busqueda acotada al area metropolitana (bbox AMBA), no es configurable por API.",
+    rubros: listRubros(),
+  });
 });
 
 /**
