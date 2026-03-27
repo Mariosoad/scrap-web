@@ -53,7 +53,7 @@ async function saveNewClients(leads) {
   const candidateEmails = candidateLeads.map((lead) => lead.email);
   const placeholders = candidateEmails.map(() => "?").join(",");
   const [existingRows] = await pool.query(
-    `SELECT email FROM client WHERE email IN (${placeholders})`,
+    `SELECT email FROM clients WHERE email IN (${placeholders})`,
     candidateEmails
   );
 
