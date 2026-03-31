@@ -25,9 +25,11 @@ app.use((req, res, next) => {
 });
 app.use(express.json());
 const DEFAULT_MAX_RESULTS = 25;
-const MAX_RESULTS_LIMIT = 200;
+/** Tope de clientes por request (sin paginar con offset si no lo usás). */
+const MAX_RESULTS_LIMIT = 2000;
 const DISCOVERY_MULTIPLIER = 5;
-const MAX_DISCOVERY_LIMIT = 1000;
+/** Tope de POIs normalizados a acumular cuando scrapeWebsites intenta rellenar emails. */
+const MAX_DISCOVERY_LIMIT = 15000;
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
@@ -50,13 +52,15 @@ function pickContactEmail(candidates) {
 
 async function saveNewClients(leads) {
   if (!Array.isArray(leads) || leads.length === 0) {
-    return { insertedCount: 0, skippedCount: 0 };
+    return { insertedCount: 0, skippedCount: 0, skippedMissingEmail: 0 };
   }
 
+  let skippedMissingEmail = 0;
   const uniqueLeadsByEmail = new Map();
   for (const lead of leads) {
     const normalizedEmail = normalizeEmail(lead.email);
     if (!normalizedEmail) {
+      skippedMissingEmail += 1;
       continue;
     }
 
@@ -70,7 +74,7 @@ async function saveNewClients(leads) {
 
   const candidateLeads = Array.from(uniqueLeadsByEmail.values());
   if (candidateLeads.length === 0) {
-    return { insertedCount: 0, skippedCount: 0 };
+    return { insertedCount: 0, skippedCount: 0, skippedMissingEmail };
   }
 
   const candidateEmails = candidateLeads.map((lead) => lead.email);
@@ -88,7 +92,11 @@ async function saveNewClients(leads) {
   );
 
   if (leadsToInsert.length === 0) {
-    return { insertedCount: 0, skippedCount: candidateLeads.length };
+    return {
+      insertedCount: 0,
+      skippedCount: candidateLeads.length,
+      skippedMissingEmail,
+    };
   }
 
   const values = leadsToInsert.map((lead) => [
@@ -106,6 +114,7 @@ async function saveNewClients(leads) {
   return {
     insertedCount: leadsToInsert.length,
     skippedCount: candidateLeads.length - leadsToInsert.length,
+    skippedMissingEmail,
   };
 }
 
@@ -127,7 +136,7 @@ app.get("/health", (_, res) => {
  * @swagger
  * /api/leads/scrape:
  *   post:
- *     summary: Descubre empresas por OSM y extrae contactos del website
+ *     summary: Descubre empresas por OSM (parada al alcanzar la pagina; email opcional salvo scrapeWebsites)
  *     tags: [Leads]
  *     requestBody:
  *       required: true
@@ -143,15 +152,21 @@ app.get("/health", (_, res) => {
  *               maxResults:
  *                 type: integer
  *                 minimum: 1
- *                 maximum: 200
- *                 example: 25
+ *                 maximum: 2000
+ *                 description: "Cantidad de leads a devolver (ej. 1500). Tambien se acepta maxResult como alias. Offset opcional; por defecto 0."
+ *                 example: 1500
  *               offset:
  *                 type: integer
  *                 minimum: 0
  *                 example: 0
+ *               scrapeWebsites:
+ *                 type: boolean
+ *                 default: false
+ *                 description: "Si es true, intenta extraer email desde la web cuando no viene en OSM (mucho mas lento). Por defecto solo se usa OSM y el email puede ser null."
  *           example:
  *             maxResults: 25
  *             offset: 0
+ *             scrapeWebsites: false
  *     responses:
  *       200:
  *         description: Leads procesados
@@ -159,7 +174,12 @@ app.get("/health", (_, res) => {
  *         description: Error de validacion
  */
 app.post("/api/leads/scrape", async (req, res) => {
-  const { category: rawCategory, maxResults = DEFAULT_MAX_RESULTS, offset = 0 } = req.body || {};
+  const body = req.body || {};
+  const { category: rawCategory, offset = 0 } = body;
+  const rawMax = body.maxResults ?? body.maxResult;
+  const maxResults =
+    rawMax !== undefined && rawMax !== null ? rawMax : DEFAULT_MAX_RESULTS;
+  const scrapeWebsites = body.scrapeWebsites === true;
   const category =
     typeof rawCategory === "string" ? rawCategory.trim() : "";
 
@@ -170,67 +190,83 @@ app.post("/api/leads/scrape", async (req, res) => {
   const safeOffset = Math.max(0, Number(offset) || 0);
 
   try {
-    const discoveryLimit = Math.min(
-      (safeOffset + safeMaxResults) * DISCOVERY_MULTIPLIER,
-      MAX_DISCOVERY_LIMIT
-    );
+    const needNormalized = safeOffset + safeMaxResults;
+    const discoveryPoolLimit = scrapeWebsites
+      ? Math.min(needNormalized * DISCOVERY_MULTIPLIER, MAX_DISCOVERY_LIMIT)
+      : needNormalized;
+
     const {
       businesses,
       searchArea,
       totalBusinesses,
       rubro,
       rubroLabel,
+      discoveryExhausted,
     } = await discoverBusinesses({
       category,
-      maxResults: discoveryLimit,
-      offset: 0,
+      maxResults: scrapeWebsites ? discoveryPoolLimit : safeMaxResults,
+      offset: scrapeWebsites ? 0 : safeOffset,
+      stopAfterNormalizedCount: discoveryPoolLimit,
     });
+
     const leads = [];
     let scanIndex = safeOffset;
 
-    while (scanIndex < businesses.length && leads.length < safeMaxResults) {
-      const business = businesses[scanIndex];
-      scanIndex += 1;
-
-      let primaryEmail = pickContactEmail(business.osmEmails);
-
-      if (!primaryEmail && business.website) {
-        const websiteContacts = await scrapeWebsiteContacts(business.website);
-        primaryEmail = pickContactEmail(websiteContacts.emails);
+    if (!scrapeWebsites) {
+      for (const business of businesses) {
+        leads.push({
+          businessName: business.businessName || null,
+          email: pickContactEmail(business.osmEmails) || null,
+          address: business.address || null,
+          sourceWebsite: business.website || null,
+        });
       }
+      scanIndex = safeOffset + businesses.length;
+    } else {
+      while (scanIndex < businesses.length && leads.length < safeMaxResults) {
+        const business = businesses[scanIndex];
+        scanIndex += 1;
 
-      if (!primaryEmail) {
-        continue;
+        let primaryEmail = pickContactEmail(business.osmEmails);
+
+        if (!primaryEmail && business.website) {
+          const websiteContacts = await scrapeWebsiteContacts(business.website);
+          primaryEmail = pickContactEmail(websiteContacts.emails);
+        }
+
+        leads.push({
+          businessName: business.businessName || null,
+          email: primaryEmail,
+          address: business.address || null,
+          sourceWebsite: business.website || null,
+        });
       }
-
-      leads.push({
-        businessName: business.businessName || null,
-        email: primaryEmail,
-        address: business.address || null,
-        sourceWebsite: business.website || null,
-      });
     }
 
     const saveSummary = await saveNewClients(leads);
-    const nextOffset = scanIndex;
-    const hasMore = nextOffset < totalBusinesses;
+    const nextOffset = safeOffset + leads.length;
+    const hasMore =
+      nextOffset < totalBusinesses || !discoveryExhausted;
     const scannedBusinessesCount = Math.max(0, scanIndex - safeOffset);
 
     return res.json({
       category: category || null,
       rubro,
       rubroLabel,
+      scrapeWebsites,
       location: FIXED_LOCATION,
       searchArea,
       maxResults: safeMaxResults,
       offset: safeOffset,
       nextOffset,
       hasMore,
+      discoveryExhausted,
       totalBusinessesDiscovered: totalBusinesses,
       scannedBusinessesCount,
       count: leads.length,
       insertedCount: saveSummary.insertedCount,
       skippedCount: saveSummary.skippedCount,
+      skippedMissingEmail: saveSummary.skippedMissingEmail,
       leads,
     });
   } catch (error) {

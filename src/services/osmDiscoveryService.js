@@ -10,8 +10,6 @@ const FIXED_LOCATION = "Argentina";
 // Bounding box Argentina: south, west, north, east (recorte aproximado del país).
 const ARGENTINA_BBOX = "-55.3,-73.65,-21.7,-53.55";
 
-/** Concurrencia acotada para no saturar mirrors públicos de Overpass. */
-const OVERPASS_CHUNK_CONCURRENCY = 2;
 
 /**
  * Rubros opcionales: si el cliente envía `category`, el primer patrón que coincida define el filtro OSM.
@@ -283,24 +281,6 @@ function passesArgentinaCountryHint(tags = {}) {
   return true;
 }
 
-async function eachConcurrent(items, concurrency, fn) {
-  const list = Array.isArray(items) ? items : [];
-  if (list.length === 0) return;
-  let index = 0;
-  const limit = Math.max(1, Math.min(concurrency, list.length));
-
-  async function worker() {
-    while (true) {
-      const i = index;
-      index += 1;
-      if (i >= list.length) return;
-      await fn(list[i], i);
-    }
-  }
-
-  await Promise.all(Array.from({ length: limit }, () => worker()));
-}
-
 function asAddress(tags = {}) {
   const parts = [
     [tags["addr:street"], tags["addr:housenumber"]].filter(Boolean).join(" ").trim(),
@@ -419,50 +399,69 @@ function leadYieldScore(entry) {
   return (hasOsm ? 4 : 0) + (hasWeb ? 2 : 0) + (entry.businessName ? 1 : 0);
 }
 
-async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
+function normalizeOsmElement(element) {
+  const tags = element.tags || {};
+  if (!passesArgentinaCountryHint(tags)) {
+    return null;
+  }
+  const osmEmails = extractOsmEmails(tags);
+  const website = resolveWebsite(tags);
+  if (osmEmails.length === 0 && !website) {
+    return null;
+  }
+  return {
+    businessName: resolveBusinessName(tags),
+    website,
+    address: asAddress(tags),
+    osmEmails,
+    source: "openstreetmap-overpass",
+  };
+}
+
+/**
+ * @param {object} opts
+ * @param {string} [opts.category]
+ * @param {number} [opts.maxResults] - tamaño de página devuelta
+ * @param {number} [opts.offset] - offset de página
+ * @param {number|null} [opts.stopAfterNormalizedCount] - si se indica, deja de consultar celdas Overpass al alcanzar esta cantidad de POIs normalizados (acelera la respuesta).
+ */
+async function discoverBusinesses({
+  category,
+  maxResults = 10,
+  offset = 0,
+  stopAfterNormalizedCount = null,
+}) {
   const rubro = resolveRubro(category);
   const { filters } = rubro;
   const { lat, lon } = gridDimensionsForFilterCount(filters.length);
   const bboxChunks = splitBboxGrid(ARGENTINA_BBOX, lat, lon);
-  const mergedElements = [];
+  const normalized = [];
   const seenIds = new Set();
 
-  await eachConcurrent(
-    bboxChunks,
-    OVERPASS_CHUNK_CONCURRENCY,
-    async (bbox) => {
-      const overpassQuery = buildOverpassQueryForBbox(bbox, filters);
-      const data = await executeOverpassQuery(overpassQuery);
-      for (const el of data?.elements || []) {
-        const idKey = `${el.type}/${el.id}`;
-        if (seenIds.has(idKey)) continue;
-        seenIds.add(idKey);
-        mergedElements.push(el);
-      }
-    }
-  );
+  const stopAt =
+    stopAfterNormalizedCount != null && Number.isFinite(Number(stopAfterNormalizedCount))
+      ? Math.max(1, Math.floor(Number(stopAfterNormalizedCount)))
+      : Infinity;
 
-  const elements = mergedElements;
-  const normalized = [];
+  let discoveryExhausted = true;
 
-  for (const element of elements) {
-    const tags = element.tags || {};
-    if (!passesArgentinaCountryHint(tags)) {
-      continue;
-    }
-    const osmEmails = extractOsmEmails(tags);
-    const website = resolveWebsite(tags);
-    if (osmEmails.length === 0 && !website) {
-      continue;
+  for (const bbox of bboxChunks) {
+    const overpassQuery = buildOverpassQueryForBbox(bbox, filters);
+    const data = await executeOverpassQuery(overpassQuery);
+    for (const el of data?.elements || []) {
+      const idKey = `${el.type}/${el.id}`;
+      if (seenIds.has(idKey)) continue;
+      seenIds.add(idKey);
+      const row = normalizeOsmElement(el);
+      if (row) normalized.push(row);
     }
 
-    normalized.push({
-      businessName: resolveBusinessName(tags),
-      website,
-      address: asAddress(tags),
-      osmEmails,
-      source: "openstreetmap-overpass",
-    });
+    normalized.sort((a, b) => leadYieldScore(b) - leadYieldScore(a));
+
+    if (normalized.length >= stopAt) {
+      discoveryExhausted = false;
+      break;
+    }
   }
 
   normalized.sort((a, b) => leadYieldScore(b) - leadYieldScore(a));
@@ -480,6 +479,7 @@ async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
     rubroLabel: rubro.label,
     totalBusinesses: normalized.length,
     businesses: paginatedBusinesses,
+    discoveryExhausted,
   };
 }
 

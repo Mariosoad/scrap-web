@@ -60,20 +60,22 @@ Cuando termine el deploy:
 
 `POST /api/leads/scrape`
 
-Solo devuelve leads que tengan `email` (nunca `null` en la lista final). El email puede venir de tags OSM (`contact:email` / `email`) o del scrape del sitio si hay `website` en OSM.
+Por defecto (`scrapeWebsites: false`) la API deja de consultar Overpass en cuanto tiene suficientes POIs para armar la página (`offset` + `maxResults`), devuelve hasta `maxResults` y el `email` puede ser `null` si solo hay web en OSM. En base de datos solo se insertan filas que tengan email (`skippedMissingEmail` en la respuesta). Con `scrapeWebsites: true` se intenta sacar el mail del sitio (mucho mas lento).
 
 Body ejemplo (sector completo en Argentina — inmobiliaria, constructoras, arquitectura, remates/martilleros, etc.):
 
 ```json
 {
   "maxResults": 25,
-  "offset": 0
+  "offset": 0,
+  "scrapeWebsites": false
 }
 ```
 
 - `category` (opcional): si lo envías, se acota a un rubro (ej. `inmobiliaria`, `arquitectura`). Si lo omitís, se unen todos los filtros del sector.
-- `maxResults`: cantidad maxima de leads a devolver por tanda (1 a 200).
+- `maxResults` (o `maxResult`): cantidad maxima de leads por request (1 a 2000). Sin `offset` equivale a pedir esa cantidad desde el inicio.
 - `offset`: posicion inicial dentro del lote descubierto para la siguiente tanda.
+- `scrapeWebsites` (opcional, default `false`): si es `true`, intenta extraer email desde la web cuando no viene en OSM.
 
 Respuesta ejemplo:
 
