@@ -5,6 +5,7 @@ const {
   discoverBusinesses,
   listRubros,
   RubroNotFoundError,
+  FIXED_LOCATION,
 } = require("./services/osmDiscoveryService");
 const { scrapeWebsiteContacts } = require("./services/websiteScraperService");
 const { sendEmail } = require("./services/emailService");
@@ -23,7 +24,6 @@ app.use((req, res, next) => {
   return next();
 });
 app.use(express.json());
-const FIXED_LOCATION = "Buenos Aires, Argentina";
 const DEFAULT_MAX_RESULTS = 25;
 const MAX_RESULTS_LIMIT = 200;
 const DISCOVERY_MULTIPLIER = 5;
@@ -31,6 +31,21 @@ const MAX_DISCOVERY_LIMIT = 1000;
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+/** Prioriza un email de contacto frente a noreply/postmaster cuando hay varios en OSM o en la web. */
+const GENERIC_EMAIL_LOCAL =
+  /^(noreply|no-reply|donotreply|mailer-daemon|postmaster|bounce|newsletter)$/i;
+
+function pickContactEmail(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+  const normalized = [
+    ...new Set(candidates.map((e) => normalizeEmail(e)).filter(Boolean)),
+  ];
+  const preferred = normalized.find(
+    (e) => !GENERIC_EMAIL_LOCAL.test(e.split("@")[0] || "")
+  );
+  return preferred || normalized[0];
 }
 
 async function saveNewClients(leads) {
@@ -123,8 +138,8 @@ app.get("/health", (_, res) => {
  *             properties:
  *               category:
  *                 type: string
- *                 description: "Opcional. Texto libre para un solo rubro (ej. inmobiliaria, arquitectura). Si lo omitís, se busca todo el sector inmobiliario/construcción/arquitectura en AMBA."
- *                 example: "inmobiliaria"
+ *                 description: "Opcional. Rubro por texto (inmobiliaria, arquitectura, constructora, muebleria, ferreteria, pintureria, vidrieria, cerrajeria, iluminacion, banos-cocinas, interiorismo, ingenieria-topografia, oficios-construccion). Si lo omitís, se usa el sector amplio (todas las categorías OSM mapeadas, bbox Argentina)."
+ *                 example: "ferreteria"
  *               maxResults:
  *                 type: integer
  *                 minimum: 1
@@ -177,14 +192,11 @@ app.post("/api/leads/scrape", async (req, res) => {
       const business = businesses[scanIndex];
       scanIndex += 1;
 
-      let primaryEmail =
-        Array.isArray(business.osmEmails) && business.osmEmails.length > 0
-          ? business.osmEmails[0]
-          : null;
+      let primaryEmail = pickContactEmail(business.osmEmails);
 
       if (!primaryEmail && business.website) {
         const websiteContacts = await scrapeWebsiteContacts(business.website);
-        primaryEmail = websiteContacts.emails[0] || null;
+        primaryEmail = pickContactEmail(websiteContacts.emails);
       }
 
       if (!primaryEmail) {
@@ -240,7 +252,7 @@ app.post("/api/leads/scrape", async (req, res) => {
  * @swagger
  * /api/leads/rubros:
  *   get:
- *     summary: Rubros reconocidos (area fija Buenos Aires AMBA)
+ *     summary: Rubros reconocidos (area fija Argentina)
  *     tags: [Leads]
  *     responses:
  *       200:
@@ -249,7 +261,8 @@ app.post("/api/leads/scrape", async (req, res) => {
 app.get("/api/leads/rubros", (_, res) => {
   res.json({
     location: FIXED_LOCATION,
-    areaNote: "Busqueda acotada al area metropolitana (bbox AMBA), no es configurable por API.",
+    areaNote:
+      "Busqueda acotada a Argentina (bbox aproximado continental + sur), no es configurable por API. Puede tardar varios minutos en la primera pasada por la cantidad de consultas Overpass.",
     rubros: listRubros(),
   });
 });

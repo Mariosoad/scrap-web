@@ -4,7 +4,7 @@ API para:
 1. Buscar empresas con OpenStreetMap (Overpass).
 2. Entrar al sitio publico de cada empresa.
 3. Extraer solo estos campos: nombre, email y direccion.
-4. Alcance fijo: Buenos Aires, Argentina.
+4. Alcance fijo: Argentina (bbox aproximado del país en OpenStreetMap).
 
 ## Requisitos
 
@@ -62,7 +62,7 @@ Cuando termine el deploy:
 
 Solo devuelve leads que tengan `email` (nunca `null` en la lista final). El email puede venir de tags OSM (`contact:email` / `email`) o del scrape del sitio si hay `website` en OSM.
 
-Body ejemplo (sector completo en AMBA — inmobiliaria, constructoras, arquitectura, remates/martilleros, etc.):
+Body ejemplo (sector completo en Argentina — inmobiliaria, constructoras, arquitectura, remates/martilleros, etc.):
 
 ```json
 {
@@ -81,8 +81,8 @@ Respuesta ejemplo:
 {
   "category": null,
   "rubro": "sector-construccion-inmobiliario",
-  "location": "Buenos Aires, Argentina",
-  "searchArea": "Buenos Aires, Argentina",
+  "location": "Argentina",
+  "searchArea": "Argentina",
   "maxResults": 25,
   "offset": 0,
   "nextOffset": 25,

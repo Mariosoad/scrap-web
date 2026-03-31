@@ -5,10 +5,13 @@ const {
   overpassTimeoutMs,
 } = require("../config");
 
-/** Siempre AMBA (Gran Buenos Aires); el rubro solo cambia los tags OSM. */
-const FIXED_LOCATION = "Buenos Aires, Argentina";
-// Bounding box AMBA: south, west, north, east.
-const BUENOS_AIRES_BBOX = "-34.92,-58.86,-34.23,-58.15";
+/** Ámbito de búsqueda OSM: Argentina (continental + Tierra del Fuego aprox.). */
+const FIXED_LOCATION = "Argentina";
+// Bounding box Argentina: south, west, north, east (recorte aproximado del país).
+const ARGENTINA_BBOX = "-55.3,-73.65,-21.7,-53.55";
+
+/** Concurrencia acotada para no saturar mirrors públicos de Overpass. */
+const OVERPASS_CHUNK_CONCURRENCY = 2;
 
 /**
  * Rubros opcionales: si el cliente envía `category`, el primer patrón que coincida define el filtro OSM.
@@ -35,9 +38,102 @@ const RUBROS = [
       /constructora?|construcci[oó]n|construction|builder|contractor|contratista|desarrolladora|edilici|obras|master[\s_-]*builder/i,
     filters: ['["craft"="builder"]', '["office"="construction"]'],
   },
+  {
+    slug: "muebleria",
+    label: "Mueblería / mobiliario y hogar",
+    patterns:
+      /muebler[ií]a|muebles|furniture|mobiliario|decoraci[oó]n[\s_-]*hogar|kitchen[\s_-]*studio|dise[nñ]o[\s_-]*de[\s_-]*cocinas/i,
+    filters: [
+      '["shop"="furniture"]',
+      '["shop"="kitchen"]',
+      '["shop"="flooring"]',
+      '["shop"="curtain"]',
+    ],
+  },
+  {
+    slug: "ferreteria",
+    label: "Ferretería / bricolaje / materiales",
+    patterns:
+      /ferreter[ií]a|bricolaje|herramientas|materiales[\s_-]*de[\s_-]*construcci[oó]n|corral[oó]n|sanitarios[\s_-]*y[\s_-]*ferreter/i,
+    filters: [
+      '["shop"="hardware"]',
+      '["shop"="doityourself"]',
+      '["shop"="builder_merchants"]',
+    ],
+  },
+  {
+    slug: "pintureria",
+    label: "Pinturería / revestimientos",
+    patterns: /pinturer[ií]a|pinturas|revestimiento|impermeabiliz/i,
+    filters: ['["shop"="paint"]'],
+  },
+  {
+    slug: "vidrieria",
+    label: "Vidriería / cerramientos",
+    patterns: /vidrier[ií]a|cristaler|cerramiento|ventanas[\s_-]*y[\s_-]*puertas/i,
+    filters: [
+      '["shop"="glaziery"]',
+      '["craft"="window_construction"]',
+    ],
+  },
+  {
+    slug: "cerrajeria",
+    label: "Cerrajería",
+    patterns: /cerrajer[ií]a|cerrajero|llavero/i,
+    filters: ['["shop"="locksmith"]'],
+  },
+  {
+    slug: "iluminacion",
+    label: "Iluminación",
+    patterns: /iluminaci[oó]n|l[aá]mparas|lighting/i,
+    filters: ['["shop"="lighting"]'],
+  },
+  {
+    slug: "banos-cocinas",
+    label: "Baños, cocinas y grifería",
+    patterns: /grifer[ií]a|sanitarios|ba[nñ]o|bathroom|kitchen[\s_-]*fitting/i,
+    filters: ['["shop"="bathroom_fittings"]'],
+  },
+  {
+    slug: "interiorismo",
+    label: "Interiorismo / diseño de interiores",
+    patterns:
+      /interiorismo|dise[nñ]o[\s_-]*de[\s_-]*interiores|interior[\s_-]*design|decoraci[oó]n[\s_-]*interior/i,
+    filters: [
+      '["shop"="interior_decoration"]',
+      '["office"="interior_design"]',
+      '["office"="interior_designer"]',
+    ],
+  },
+  {
+    slug: "ingenieria-topografia",
+    label: "Ingeniería / agrimensura / mensuras",
+    patterns:
+      /ingenier[ií]a|ingeniero|estructur|civil|agrimensor|topograf|mensur|surveyor/i,
+    filters: ['["office"="engineer"]', '["office"="surveyor"]'],
+  },
+  {
+    slug: "oficios-construccion",
+    label: "Oficios de obra (electricidad, plomería, carpintería, etc.)",
+    patterns:
+      /electricista|plomer[ií]a|fontaner[ií]a|carpinter[ií]a|ebanist|pintor[\s_-]*de|techista|marmol|yeso|alba[iñ]il|azulej|impermeabiliz|instalador/i,
+    filters: [
+      '["craft"="electrician"]',
+      '["craft"="plumber"]',
+      '["craft"="carpenter"]',
+      '["craft"="joiner"]',
+      '["craft"="painter"]',
+      '["craft"="roofer"]',
+      '["craft"="stonemason"]',
+      '["craft"="tiler"]',
+      '["craft"="glaziery"]',
+      '["craft"="metal_construction"]',
+      '["craft"="dry_plasterer"]',
+    ],
+  },
 ];
 
-/** Filtros OSM únicos para búsqueda amplia: inmobiliarias, martilleros/remates, arquitectos, constructoras, etc. */
+/** Filtros OSM únicos para búsqueda amplia (sector vivienda / construcción / obra). */
 const ALL_SECTOR_FILTERS = (() => {
   const set = new Set();
   for (const r of RUBROS) {
@@ -50,7 +146,8 @@ const ALL_SECTOR_FILTERS = (() => {
 
 const MERGED_SECTOR = {
   slug: "sector-construccion-inmobiliario",
-  label: "Inmobiliaria, construcción, arquitectura y afines (AMBA)",
+  label:
+    "Inmobiliaria, construcción, arquitectura, mueblerías, ferreterías, oficios, materiales y afines (Argentina)",
   filters: ALL_SECTOR_FILTERS,
 };
 
@@ -119,7 +216,7 @@ function listRubros() {
   return [
     {
       slug: MERGED_SECTOR.slug,
-      label: `${MERGED_SECTOR.label} (por defecto si no envías category)`,
+      label: `${MERGED_SECTOR.label} — por defecto si no envías category (bbox Argentina)`,
     },
     ...RUBROS.map((r) => ({
       slug: r.slug,
@@ -136,17 +233,72 @@ const DEFAULT_OVERPASS_URLS = [
   "https://overpass.private.coffee/api/interpreter",
 ];
 
-/** Parte el bbox en franjas horizontales para consultas más livianas (menos 504). */
-function splitBbox(bboxStr, parts = 3) {
+/**
+ * Parte el bbox en una grilla lat×lon para consultas Overpass más livianas (menos 504/timeouts).
+ */
+function splitBboxGrid(bboxStr, latParts, lonParts) {
   const [south, west, north, east] = bboxStr.split(",").map(Number);
-  const span = north - south;
+  const latSpan = north - south;
+  const lonSpan = east - west;
+  const latN = Math.max(1, Math.floor(latParts));
+  const lonN = Math.max(1, Math.floor(lonParts));
   const out = [];
-  for (let i = 0; i < parts; i += 1) {
-    const s = south + (span * i) / parts;
-    const n = south + (span * (i + 1)) / parts;
-    out.push(`${s},${west},${n},${east}`);
+  for (let i = 0; i < latN; i += 1) {
+    const s = south + (latSpan * i) / latN;
+    const n = south + (latSpan * (i + 1)) / latN;
+    for (let j = 0; j < lonN; j += 1) {
+      const w = west + (lonSpan * j) / lonN;
+      const e = west + (lonSpan * (j + 1)) / lonN;
+      out.push(`${s},${w},${n},${e}`);
+    }
   }
   return out;
+}
+
+/** Más filtros OSM ⇒ celdas más chicas (más peticiones, menos peso por request). */
+function gridDimensionsForFilterCount(filterCount) {
+  const n = Math.max(1, Number(filterCount) || 0);
+  if (n > 28) return { lat: 8, lon: 6 };
+  if (n > 18) return { lat: 7, lon: 5 };
+  if (n > 10) return { lat: 6, lon: 4 };
+  if (n > 4) return { lat: 5, lon: 4 };
+  return { lat: 4, lon: 3 };
+}
+
+/** Si OSM trae país explícito en el borde del bbox, descartamos vecinos obvios. */
+function passesArgentinaCountryHint(tags = {}) {
+  const raw = String(tags["addr:country"] || "").trim();
+  if (!raw) return true;
+  const lower = raw.toLowerCase();
+  const ascii = lower.normalize("NFD").replace(/\p{M}/gu, "");
+  if (/argent|argentina/.test(ascii) || /^(ar|arg)$/i.test(raw.trim())) {
+    return true;
+  }
+  if (
+    /\b(chile|brasil|brazil|uruguay|paraguay|bolivia)\b/i.test(ascii) ||
+    /^(cl|uy|py|bo|br)$/i.test(raw.trim())
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function eachConcurrent(items, concurrency, fn) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) return;
+  let index = 0;
+  const limit = Math.max(1, Math.min(concurrency, list.length));
+
+  async function worker() {
+    while (true) {
+      const i = index;
+      index += 1;
+      if (i >= list.length) return;
+      await fn(list[i], i);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, () => worker()));
 }
 
 function asAddress(tags = {}) {
@@ -270,26 +422,34 @@ function leadYieldScore(entry) {
 async function discoverBusinesses({ category, maxResults = 10, offset = 0 }) {
   const rubro = resolveRubro(category);
   const { filters } = rubro;
-  const bboxChunks = splitBbox(BUENOS_AIRES_BBOX, 3);
+  const { lat, lon } = gridDimensionsForFilterCount(filters.length);
+  const bboxChunks = splitBboxGrid(ARGENTINA_BBOX, lat, lon);
   const mergedElements = [];
   const seenIds = new Set();
 
-  for (const bbox of bboxChunks) {
-    const overpassQuery = buildOverpassQueryForBbox(bbox, filters);
-    const data = await executeOverpassQuery(overpassQuery);
-    for (const el of data?.elements || []) {
-      const idKey = `${el.type}/${el.id}`;
-      if (seenIds.has(idKey)) continue;
-      seenIds.add(idKey);
-      mergedElements.push(el);
+  await eachConcurrent(
+    bboxChunks,
+    OVERPASS_CHUNK_CONCURRENCY,
+    async (bbox) => {
+      const overpassQuery = buildOverpassQueryForBbox(bbox, filters);
+      const data = await executeOverpassQuery(overpassQuery);
+      for (const el of data?.elements || []) {
+        const idKey = `${el.type}/${el.id}`;
+        if (seenIds.has(idKey)) continue;
+        seenIds.add(idKey);
+        mergedElements.push(el);
+      }
     }
-  }
+  );
 
   const elements = mergedElements;
   const normalized = [];
 
   for (const element of elements) {
     const tags = element.tags || {};
+    if (!passesArgentinaCountryHint(tags)) {
+      continue;
+    }
     const osmEmails = extractOsmEmails(tags);
     const website = resolveWebsite(tags);
     if (osmEmails.length === 0 && !website) {

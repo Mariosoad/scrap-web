@@ -20,9 +20,36 @@ function uniqueValues(list) {
   return [...new Set(list.filter(Boolean))];
 }
 
+function extractMailtoEmails($) {
+  const out = [];
+  $('a[href^="mailto:"]').each((_, el) => {
+    const href = ($(el).attr("href") || "").trim();
+    const path = href.replace(/^mailto:/i, "").split("?")[0];
+    const decoded = decodeURIComponent(path);
+    const match = decoded.match(EMAIL_REGEX);
+    if (match) out.push(...match);
+  });
+  return uniqueValues(out.map(cleanEmail));
+}
+
 function inferContactPages(baseUrl, $) {
   const candidates = new Set([baseUrl]);
-  const keywords = ["contact", "contacto", "about", "nosotros"];
+  const keywords = [
+    "contact",
+    "contacto",
+    "about",
+    "nosotros",
+    "ubicacion",
+    "ubicación",
+    "escribinos",
+    "escríbenos",
+    "consultas",
+    "ventas",
+    "cotizacion",
+    "cotización",
+    "presupuesto",
+    "comercial",
+  ];
 
   $("a[href]").each((_, el) => {
     const href = ($(el).attr("href") || "").trim();
@@ -39,7 +66,7 @@ function inferContactPages(baseUrl, $) {
     }
   });
 
-  return [...candidates].slice(0, 5);
+  return [...candidates].slice(0, 8);
 }
 
 async function fetchHtml(url) {
@@ -74,11 +101,13 @@ async function scrapeWebsiteContacts(rawWebsiteUrl) {
     const $ = cheerio.load(html);
     const pages = inferContactPages(website, $);
 
-    const allEmails = [];
+    const allEmails = [...extractMailtoEmails($)];
 
     for (const pageUrl of pages) {
       try {
         const pageHtml = pageUrl === website ? html : await fetchHtml(pageUrl);
+        const $page = cheerio.load(pageHtml);
+        allEmails.push(...extractMailtoEmails($page));
         const { emails } = extractFromHtml(pageHtml);
         allEmails.push(...emails);
       } catch (_) {
