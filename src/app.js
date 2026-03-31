@@ -486,6 +486,10 @@ app.put("/api/clients/status", async (req, res) => {
  * /api/email/send:
  *   post:
  *     summary: Envia un email (Resend por HTTPS si RESEND_API_KEY; si no, SMTP)
+ *     description: |
+ *       Contrato habitual del frontend: solo `to`, `subject` y `text`. El backend convierte `text` a HTML seguro,
+ *       llama a Resend/SMTP con ese HTML y agrega la firma GEMDAM (imagen clicable). No hace falta enviar `html` desde el cliente.
+ *       Opcional: `html` si algun dia queres cuerpo HTML propio; en ese caso se concatena la misma firma al final.
  *     tags: [Email]
  *     requestBody:
  *       required: true
@@ -503,10 +507,12 @@ app.put("/api/clients/status", async (req, res) => {
  *                 example: "Propuesta comercial"
  *               text:
  *                 type: string
+ *                 description: "Cuerpo del mensaje en texto plano (lo que envia el frontend). Obligatorio salvo que envies `html`."
  *                 example: "Hola, te comparto nuestra propuesta."
  *               html:
  *                 type: string
- *                 example: "<p>Hola, te comparto nuestra propuesta.</p>"
+ *                 description: "Opcional. Si se envia, reemplaza la conversion desde `text` como cuerpo principal (la firma se agrega igual)."
+ *                 example: "<p>Hola, te comparto nuestra <strong>propuesta</strong>.</p>"
  *           example:
  *             to: "cliente@empresa.com"
  *             subject: "Propuesta comercial"
