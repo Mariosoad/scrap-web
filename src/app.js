@@ -318,9 +318,9 @@ app.get("/api/clients", async (req, res) => {
  * @swagger
  * /api/clients/claim:
  *   get:
- *     summary: Obtiene un cliente sin status (el de mayor id)
+ *     summary: Obtiene el primer cliente sin status (FIFO por id)
  *     tags: [Clients]
- *     description: Devuelve un solo registro con status NULL, ordenado por id descendente.
+ *     description: Devuelve un solo registro con status NULL, el de menor id (primero en cola).
  *     responses:
  *       200:
  *         description: Cliente disponible o ninguno
@@ -330,7 +330,7 @@ app.get("/api/clients", async (req, res) => {
 app.get("/api/clients/claim", async (req, res) => {
   try {
     const [rows] = await pool.query(
-      "SELECT * FROM clients WHERE `status` IS NULL ORDER BY id DESC LIMIT 1"
+      "SELECT * FROM clients WHERE `status` IS NULL ORDER BY id ASC LIMIT 1"
     );
     const client = rows?.[0] ?? null;
     return res.json({ data: client });
