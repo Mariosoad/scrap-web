@@ -19,6 +19,10 @@ module.exports = {
   smtpUser: process.env.SMTP_USER || "",
   smtpPass: process.env.SMTP_PASS || "",
   smtpFrom: process.env.SMTP_FROM || process.env.SMTP_USER || "",
+  /** Si está definida, el envío usa la API HTTPS de Resend (recomendado en Railway Hobby/Free). */
+  resendApiKey: process.env.RESEND_API_KEY || "",
+  /** Remitente verificado en Resend; por defecto se reutiliza SMTP_FROM. */
+  resendFrom: process.env.RESEND_FROM || process.env.SMTP_FROM || "",
   mysqlUrl: process.env.MYSQL_PUBLIC_URL || process.env.MYSQL_URL || "",
   mysqlHost: process.env.MYSQLHOST || "",
   mysqlPort: Number(process.env.MYSQLPORT || 3306),

@@ -485,7 +485,7 @@ app.put("/api/clients/status", async (req, res) => {
  * @swagger
  * /api/email/send:
  *   post:
- *     summary: Envia un email por SMTP
+ *     summary: Envia un email (Resend por HTTPS si RESEND_API_KEY; si no, SMTP)
  *     tags: [Email]
  *     requestBody:
  *       required: true
@@ -524,7 +524,7 @@ app.put("/api/clients/status", async (req, res) => {
  *       400:
  *         description: Error de validacion (status failed)
  *       500:
- *         description: Fallo SMTP u otro error al enviar (status failed)
+ *         description: Fallo al enviar (Resend, SMTP u otro) (status failed)
  */
 app.post("/api/email/send", async (req, res) => {
   const body = req.body || {};
