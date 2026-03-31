@@ -342,6 +342,96 @@ app.get("/api/clients/claim", async (req, res) => {
   }
 });
 
+const CLIENT_STATUS_MAX_LENGTH = 45;
+
+/**
+ * @swagger
+ * /api/clients/status:
+ *   put:
+ *     summary: Actualiza el status de un cliente por email
+ *     tags: [Clients]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, status]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: "cliente@empresa.com"
+ *               status:
+ *                 type: string
+ *                 maxLength: 45
+ *                 description: Nuevo valor de status (VARCHAR 45 en BD)
+ *                 example: "contactado"
+ *     responses:
+ *       200:
+ *         description: Status actualizado
+ *       400:
+ *         description: Error de validacion
+ *       404:
+ *         description: Cliente no encontrado
+ *       500:
+ *         description: Error del servidor
+ */
+app.put("/api/clients/status", async (req, res) => {
+  const body = req.body || {};
+  const email = normalizeEmail(body.email);
+  const rawStatus = body.status;
+
+  if (!email) {
+    return res.status(400).json({
+      message: "El campo 'email' es obligatorio y debe ser un email valido.",
+    });
+  }
+
+  if (rawStatus === undefined || rawStatus === null) {
+    return res.status(400).json({
+      message: "El campo 'status' es obligatorio.",
+    });
+  }
+
+  if (typeof rawStatus !== "string") {
+    return res.status(400).json({
+      message: "El campo 'status' debe ser un string.",
+    });
+  }
+
+  const status = rawStatus.trim();
+  if (status.length > CLIENT_STATUS_MAX_LENGTH) {
+    return res.status(400).json({
+      message: `El campo 'status' admite como maximo ${CLIENT_STATUS_MAX_LENGTH} caracteres.`,
+    });
+  }
+
+  try {
+    const [result] = await pool.query(
+      "UPDATE clients SET `status` = ? WHERE email = ?",
+      [status, email]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: "No se encontro un cliente con ese email.",
+      });
+    }
+
+    return res.json({
+      email,
+      status,
+      updated: true,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "No se pudo actualizar el status del cliente.",
+      detail: error.message,
+    });
+  }
+});
+
 /**
  * @swagger
  * /api/email/send:
