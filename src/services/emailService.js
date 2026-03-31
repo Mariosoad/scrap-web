@@ -1,4 +1,4 @@
-const axios = require("axios");
+const { Resend } = require("resend");
 const nodemailer = require("nodemailer");
 const {
   smtpHost,
@@ -19,19 +19,6 @@ function validateSmtpConfig() {
   }
 }
 
-function formatResendError(err) {
-  const body = err.response?.data;
-  if (!body) return err.message || "Error al enviar con Resend.";
-  if (typeof body.message === "string") return body.message;
-  if (Array.isArray(body.message)) return body.message.join("; ");
-  if (typeof body.error === "string") return body.error;
-  try {
-    return JSON.stringify(body);
-  } catch {
-    return err.message;
-  }
-}
-
 async function sendViaResend({ to, subject, text, html }) {
   const fromTrimmed = String(resendFrom || "").trim();
   if (!fromTrimmed) {
@@ -40,6 +27,7 @@ async function sendViaResend({ to, subject, text, html }) {
     );
   }
 
+  const resend = new Resend(resendApiKey.trim());
   const payload = {
     from: fromTrimmed,
     to: [to],
@@ -48,22 +36,15 @@ async function sendViaResend({ to, subject, text, html }) {
   if (text) payload.text = text;
   if (html) payload.html = html;
 
-  try {
-    const { data } = await axios.post("https://api.resend.com/emails", payload, {
-      headers: {
-        Authorization: `Bearer ${resendApiKey}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 30000,
-    });
-    return {
-      messageId: data.id,
-      accepted: [to],
-      rejected: [],
-    };
-  } catch (err) {
-    throw new Error(formatResendError(err));
+  const { data, error } = await resend.emails.send(payload);
+  if (error) {
+    throw new Error(error.message || "Error al enviar con Resend.");
   }
+  return {
+    messageId: data.id,
+    accepted: [to],
+    rejected: [],
+  };
 }
 
 async function sendViaSmtp({ to, subject, text, html }) {
