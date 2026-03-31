@@ -23,6 +23,9 @@ module.exports = {
   resendApiKey: process.env.RESEND_API_KEY || "",
   /** Remitente verificado en Resend; por defecto se reutiliza SMTP_FROM. */
   resendFrom: process.env.RESEND_FROM || process.env.SMTP_FROM || "",
+  /** Reply-To en envíos Resend (cabecera reply_to en la API). Por defecto SMTP_FROM si es un email suelto. */
+  resendReplyTo:
+    process.env.RESEND_REPLY_TO || process.env.SMTP_FROM || "",
   mysqlUrl: process.env.MYSQL_PUBLIC_URL || process.env.MYSQL_URL || "",
   mysqlHost: process.env.MYSQLHOST || "",
   mysqlPort: Number(process.env.MYSQLPORT || 3306),

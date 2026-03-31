@@ -9,6 +9,7 @@ const {
   smtpFrom,
   resendApiKey,
   resendFrom,
+  resendReplyTo,
 } = require("../config");
 
 function validateSmtpConfig() {
@@ -35,6 +36,11 @@ async function sendViaResend({ to, subject, text, html }) {
   };
   if (text) payload.text = text;
   if (html) payload.html = html;
+
+  const replyTrimmed = String(resendReplyTo || "").trim();
+  if (replyTrimmed) {
+    payload.replyTo = replyTrimmed;
+  }
 
   const { data, error } = await resend.emails.send(payload);
   if (error) {
