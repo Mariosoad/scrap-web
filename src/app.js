@@ -458,16 +458,10 @@ app.put("/api/clients/status", async (req, res) => {
  *               html:
  *                 type: string
  *                 example: "<p>Hola, te comparto nuestra propuesta.</p>"
- *               leadId:
- *                 type: integer
- *                 nullable: true
- *                 description: ID opcional (p. ej. lead/cliente) para correlacionar la respuesta
- *                 example: 123
  *           example:
  *             to: "cliente@empresa.com"
  *             subject: "Propuesta comercial"
  *             text: "Hola, te comparto nuestra propuesta."
- *             leadId: 123
  *     responses:
  *       200:
  *         description: Email enviado (status sent)
@@ -476,7 +470,6 @@ app.put("/api/clients/status", async (req, res) => {
  *             schema:
  *               type: object
  *               properties:
- *                 leadId: { type: integer, nullable: true }
  *                 status: { type: string, enum: [sent] }
  *                 error: { type: string, nullable: true }
  *       400:
@@ -488,39 +481,23 @@ app.post("/api/email/send", async (req, res) => {
   const body = req.body || {};
   const { to, subject, text, html } = body;
 
-  let leadId = null;
-  if (body.leadId !== undefined && body.leadId !== null && body.leadId !== "") {
-    const n = Number(body.leadId);
-    if (!Number.isFinite(n) || !Number.isInteger(n)) {
-      return res.status(400).json({
-        leadId: null,
-        status: "failed",
-        error: "El campo 'leadId' debe ser un numero entero.",
-      });
-    }
-    leadId = n;
-  }
-
   const toEmail = String(to || "").trim();
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   if (!emailRegex.test(toEmail)) {
     return res.status(400).json({
-      leadId,
       status: "failed",
       error: "El campo 'to' debe ser un email valido.",
     });
   }
   if (!subject || typeof subject !== "string") {
     return res.status(400).json({
-      leadId,
       status: "failed",
       error: "El campo 'subject' es obligatorio y debe ser string.",
     });
   }
   if (!text && !html) {
     return res.status(400).json({
-      leadId,
       status: "failed",
       error: "Debes enviar 'text' o 'html'.",
     });
@@ -529,13 +506,11 @@ app.post("/api/email/send", async (req, res) => {
   try {
     await sendEmail({ to: toEmail, subject, text, html });
     return res.json({
-      leadId,
       status: "sent",
       error: null,
     });
   } catch (error) {
     return res.status(500).json({
-      leadId,
       status: "failed",
       error: error.message || "No se pudo enviar el email.",
     });
