@@ -20,6 +20,97 @@ function uniqueValues(list) {
   return [...new Set(list.filter(Boolean))];
 }
 
+function digitsOnlyPhone(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function mergePhoneCandidates(list) {
+  const map = new Map();
+  for (const item of list) {
+    if (!item || item.digits == null) continue;
+    const d = digitsOnlyPhone(item.digits);
+    if (d.length < 8) continue;
+    const w = Boolean(item.whatsapp);
+    const prev = map.get(d);
+    if (!prev || (w && !prev.whatsapp)) {
+      map.set(d, { digits: d, whatsapp: w || Boolean(prev?.whatsapp) });
+    }
+  }
+  return [...map.values()];
+}
+
+function extractTelFromHref(href) {
+  const path = href.replace(/^tel:/i, "").split("?")[0];
+  const decoded = decodeURIComponent(path);
+  const digits = digitsOnlyPhone(decoded);
+  if (digits.length < 8) return null;
+  return { digits, whatsapp: false };
+}
+
+function extractWhatsAppFromHref(href) {
+  const raw = String(href || "").trim();
+  if (!raw) return null;
+  try {
+    if (/^whatsapp:/i.test(raw)) {
+      const u = new URL(raw);
+      const phone = u.searchParams.get("phone");
+      const d = digitsOnlyPhone(phone || "");
+      if (d.length >= 8) return { digits: d, whatsapp: true };
+    }
+    const u = new URL(raw, "https://example.com");
+    const host = u.hostname.toLowerCase();
+    if (host === "wa.me" || host === "www.wa.me") {
+      const d = digitsOnlyPhone(u.pathname.replace(/\//g, ""));
+      if (d.length >= 8) return { digits: d, whatsapp: true };
+    }
+    if (host.includes("whatsapp.com")) {
+      const phone = u.searchParams.get("phone");
+      const d = digitsOnlyPhone(phone || "");
+      if (d.length >= 8) return { digits: d, whatsapp: true };
+    }
+  } catch (_) {
+    // ignore
+  }
+  return null;
+}
+
+function extractPhoneLinksFromCheerio($) {
+  const out = [];
+  $('a[href^="tel:"]').each((_, el) => {
+    const href = ($(el).attr("href") || "").trim();
+    const parsed = extractTelFromHref(href);
+    if (parsed) out.push(parsed);
+  });
+  $("a[href]").each((_, el) => {
+    const href = ($(el).attr("href") || "").trim();
+    if (!href) return;
+    const lower = href.toLowerCase();
+    if (!lower.includes("wa.me") && !lower.includes("whatsapp.com") && !lower.startsWith("whatsapp:")) {
+      return;
+    }
+    const parsed = extractWhatsAppFromHref(href);
+    if (parsed) out.push(parsed);
+  });
+  return out;
+}
+
+function extractPhonesFromHtmlRaw(html) {
+  const out = [];
+  const waRe = /https?:\/\/(?:api\.|web\.)?whatsapp\.com\/[^\s"'<>]+/gi;
+  const waMeRe = /https?:\/\/(?:www\.)?wa\.me\/[^\s"'<>]+/gi;
+  let m;
+  const haystack = String(html || "");
+  while ((m = waRe.exec(haystack)) !== null) {
+    const parsed = extractWhatsAppFromHref(m[0]);
+    if (parsed) out.push(parsed);
+  }
+  while ((m = waMeRe.exec(haystack)) !== null) {
+    const parsed = extractWhatsAppFromHref(m[0]);
+    if (parsed) out.push(parsed);
+  }
+  return out;
+}
+
 function extractMailtoEmails($) {
   const out = [];
   $('a[href^="mailto:"]').each((_, el) => {
@@ -83,7 +174,8 @@ async function fetchHtml(url) {
 
 function extractFromHtml(html) {
   const emails = uniqueValues((html.match(EMAIL_REGEX) || []).map(cleanEmail));
-  return { emails };
+  const phoneRaw = extractPhonesFromHtmlRaw(html);
+  return { emails, phoneRaw };
 }
 
 async function scrapeWebsiteContacts(rawWebsiteUrl) {
@@ -91,6 +183,7 @@ async function scrapeWebsiteContacts(rawWebsiteUrl) {
   if (!website) {
     return {
       emails: [],
+      phoneCandidates: [],
       addressCandidates: [],
       visitedPages: [],
     };
@@ -102,14 +195,19 @@ async function scrapeWebsiteContacts(rawWebsiteUrl) {
     const pages = inferContactPages(website, $);
 
     const allEmails = [...extractMailtoEmails($)];
+    const allPhones = [
+      ...extractPhoneLinksFromCheerio($),
+      ...extractPhonesFromHtmlRaw(html),
+    ];
 
     for (const pageUrl of pages) {
       try {
         const pageHtml = pageUrl === website ? html : await fetchHtml(pageUrl);
         const $page = cheerio.load(pageHtml);
         allEmails.push(...extractMailtoEmails($page));
-        const { emails } = extractFromHtml(pageHtml);
+        const { emails, phoneRaw } = extractFromHtml(pageHtml);
         allEmails.push(...emails);
+        allPhones.push(...extractPhoneLinksFromCheerio($page), ...phoneRaw);
       } catch (_) {
         // Continue with other URLs if one fails.
       }
@@ -117,12 +215,14 @@ async function scrapeWebsiteContacts(rawWebsiteUrl) {
 
     return {
       emails: uniqueValues(allEmails),
+      phoneCandidates: mergePhoneCandidates(allPhones),
       addressCandidates: [],
       visitedPages: pages,
     };
   } catch (_) {
     return {
       emails: [],
+      phoneCandidates: [],
       addressCandidates: [],
       visitedPages: [],
     };

@@ -30,6 +30,9 @@ const MAX_RESULTS_LIMIT = 2000;
 const DISCOVERY_MULTIPLIER = 5;
 /** Tope de POIs normalizados a acumular cuando scrapeWebsites intenta rellenar emails. */
 const MAX_DISCOVERY_LIMIT = 15000;
+/** Enrich-phones: cuántas webs scrapear por request (666 filas ⇒ varias llamadas). */
+const ENRICH_PHONES_DEFAULT_LIMIT = 15;
+const ENRICH_PHONES_MAX_LIMIT = 60;
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
@@ -48,6 +51,38 @@ function pickContactEmail(candidates) {
     (e) => !GENERIC_EMAIL_LOCAL.test(e.split("@")[0] || "")
   );
   return preferred || normalized[0];
+}
+
+function digitsOnlyPhone(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+/**
+ * Un solo teléfono para guardar: si hay varios, prioriza el asociado a WhatsApp (enlace o tag OSM).
+ */
+function pickContactPhone(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+  const map = new Map();
+  for (const c of candidates) {
+    let digits;
+    let whatsapp = false;
+    if (c && typeof c === "object" && "digits" in c) {
+      digits = digitsOnlyPhone(c.digits);
+      whatsapp = Boolean(c.whatsapp);
+    } else {
+      digits = digitsOnlyPhone(c);
+    }
+    if (digits.length < 8) continue;
+    const prev = map.get(digits);
+    if (!prev || (whatsapp && !prev.whatsapp)) {
+      map.set(digits, { digits, whatsapp: whatsapp || Boolean(prev?.whatsapp) });
+    }
+  }
+  if (map.size === 0) return null;
+  const list = [...map.values()];
+  const preferred = list.find((x) => x.whatsapp);
+  const chosen = preferred || list[0];
+  return `+${chosen.digits}`;
 }
 
 async function saveNewClients(leads) {
@@ -104,10 +139,13 @@ async function saveNewClients(leads) {
     lead.email,
     lead.address || null,
     lead.sourceWebsite || null,
+    lead.phone != null && String(lead.phone).trim() !== ""
+      ? String(lead.phone).trim()
+      : null,
   ]);
 
   await pool.query(
-    "INSERT INTO clients (`name`, `email`, `address`, `web`) VALUES ?",
+    "INSERT INTO clients (`name`, `email`, `address`, `web`, `phone`) VALUES ?",
     [values]
   );
 
@@ -214,11 +252,13 @@ app.post("/api/leads/scrape", async (req, res) => {
 
     if (!scrapeWebsites) {
       for (const business of businesses) {
+        const osmPhones = business.osmPhoneCandidates || [];
         leads.push({
           businessName: business.businessName || null,
           email: pickContactEmail(business.osmEmails) || null,
           address: business.address || null,
           sourceWebsite: business.website || null,
+          phone: pickContactPhone(osmPhones),
         });
       }
       scanIndex = safeOffset + businesses.length;
@@ -228,17 +268,25 @@ app.post("/api/leads/scrape", async (req, res) => {
         scanIndex += 1;
 
         let primaryEmail = pickContactEmail(business.osmEmails);
+        const osmPhones = business.osmPhoneCandidates || [];
+        let webPhones = [];
 
-        if (!primaryEmail && business.website) {
+        if (business.website) {
           const websiteContacts = await scrapeWebsiteContacts(business.website);
-          primaryEmail = pickContactEmail(websiteContacts.emails);
+          webPhones = websiteContacts.phoneCandidates || [];
+          if (!primaryEmail) {
+            primaryEmail = pickContactEmail(websiteContacts.emails);
+          }
         }
+
+        const phone = pickContactPhone([...osmPhones, ...webPhones]);
 
         leads.push({
           businessName: business.businessName || null,
           email: primaryEmail,
           address: business.address || null,
           sourceWebsite: business.website || null,
+          phone,
         });
       }
     }
@@ -358,6 +406,104 @@ app.get("/api/clients", async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: "No se pudieron obtener los clients.",
+      detail: error.message,
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/clients/enrich-phones:
+ *   post:
+ *     summary: Rellena phone en clientes existentes (scraping por web, una fila tras otra)
+ *     tags: [Clients]
+ *     description: |
+ *       Busca filas con `web` no vacío y `phone` NULL o vacío, ordenadas por `id`.
+ *       Por cada una llama al mismo scraper que usa `/api/leads/scrape` (tel / WhatsApp) y hace UPDATE solo del campo `phone`.
+ *       No inserta filas ni modifica el flujo de leads. Usá `limit` acotado y repetí la llamada hasta `remainingWithoutPhone` sea 0.
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               limit:
+ *                 type: integer
+ *                 minimum: 1
+ *                 maximum: 60
+ *                 default: 15
+ *                 description: Cantidad máxima de sitios a procesar en esta petición
+ *     responses:
+ *       200:
+ *         description: Resultado del lote
+ *       500:
+ *         description: Error del servidor
+ */
+app.post("/api/clients/enrich-phones", async (req, res) => {
+  const body = req.body || {};
+  const rawLimit = body.limit;
+  const limit = Math.min(
+    ENRICH_PHONES_MAX_LIMIT,
+    Math.max(1, Number(rawLimit) || ENRICH_PHONES_DEFAULT_LIMIT)
+  );
+
+  const phoneEmptySql = `(c.phone IS NULL OR TRIM(COALESCE(c.phone, '')) = '')`;
+  const webPresentSql = `(c.web IS NOT NULL AND TRIM(COALESCE(c.web, '')) != '')`;
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT c.id, c.email, c.name, c.web FROM clients c
+       WHERE ${phoneEmptySql} AND ${webPresentSql}
+       ORDER BY c.id ASC
+       LIMIT ?`,
+      [limit]
+    );
+
+    let updated = 0;
+    let noPhoneFound = 0;
+    const errors = [];
+
+    for (const row of rows) {
+      try {
+        const contacts = await scrapeWebsiteContacts(row.web);
+        const phone = pickContactPhone(contacts.phoneCandidates || []);
+        if (phone) {
+          await pool.query("UPDATE clients SET phone = ? WHERE id = ?", [
+            phone,
+            row.id,
+          ]);
+          updated += 1;
+        } else {
+          noPhoneFound += 1;
+        }
+      } catch (err) {
+        errors.push({
+          id: row.id,
+          email: row.email,
+          message: err.message || String(err),
+        });
+      }
+    }
+
+    const [countRows] = await pool.query(
+      `SELECT COUNT(*) AS remaining FROM clients c
+       WHERE ${phoneEmptySql} AND ${webPresentSql}`
+    );
+    const remainingWithoutPhone = Number(countRows?.[0]?.remaining ?? 0);
+
+    return res.json({
+      limit,
+      attempted: rows.length,
+      updated,
+      noPhoneFound,
+      errors,
+      remainingWithoutPhone,
+      hasMore: remainingWithoutPhone > 0,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "No se pudo enriquecer telefonos.",
       detail: error.message,
     });
   }

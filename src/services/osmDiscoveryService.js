@@ -168,6 +168,49 @@ function extractOsmEmails(tags = {}) {
   return matches ? [...new Set(matches.map((e) => e.trim().toLowerCase()))] : [];
 }
 
+function digitsOnlyPhone(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+/**
+ * Candidatos de teléfono desde tags OSM; `whatsapp: true` si el tag indica WhatsApp explícito.
+ */
+function extractOsmPhoneCandidates(tags = {}) {
+  const entries = [
+    ["contact:whatsapp", true],
+    ["whatsapp", true],
+    ["contact:phone", false],
+    ["contact:mobile", false],
+    ["phone", false],
+  ];
+  const out = [];
+  for (const [key, whatsapp] of entries) {
+    const raw = tags[key];
+    if (!raw || typeof raw !== "string") continue;
+    for (const part of raw.split(/[;,|]/)) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      let digits = digitsOnlyPhone(trimmed);
+      if (/^https?:\/\//i.test(trimmed) || trimmed.toLowerCase().includes("wa.me")) {
+        try {
+          const u = new URL(trimmed, "https://example.com");
+          if (u.hostname.toLowerCase().includes("wa.me")) {
+            digits = digitsOnlyPhone(u.pathname.replace(/\//g, ""));
+          } else if (u.hostname.toLowerCase().includes("whatsapp.com")) {
+            digits = digitsOnlyPhone(u.searchParams.get("phone") || "");
+          }
+        } catch (_) {
+          // ignore
+        }
+      }
+      if (digits.length >= 8) {
+        out.push({ digits, whatsapp: whatsapp || /wa\.me|whatsapp/i.test(trimmed) });
+      }
+    }
+  }
+  return out;
+}
+
 function resolveWebsite(tags) {
   return tags.website || tags["contact:website"] || tags.url || null;
 }
@@ -414,6 +457,7 @@ function normalizeOsmElement(element) {
     website,
     address: asAddress(tags),
     osmEmails,
+    osmPhoneCandidates: extractOsmPhoneCandidates(tags),
     source: "openstreetmap-overpass",
   };
 }
@@ -490,4 +534,5 @@ module.exports = {
   RubroNotFoundError,
   FIXED_LOCATION,
   extractOsmEmails,
+  extractOsmPhoneCandidates,
 };
